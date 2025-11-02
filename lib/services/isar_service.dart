@@ -1,0 +1,168 @@
+// lib/services/isar_service.dart
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:isar/isar.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../models/role.dart';
+import '../models/user.dart';
+import '../models/sync_queue_item.dart';
+
+// ----------------------------------------------------------------------
+// FUNCIÓN DE AYUDA: fastHash para IDs de Isar
+// ----------------------------------------------------------------------
+
+// Isar requiere una función hash rápida para convertir un String (como un UUID)
+// en un int (IsarId) para la clave primaria.
+int fastHash(String string) {
+  var hash = 0xcbf29ce484222325;
+
+  var i = 0;
+  while (i < string.length) {
+    var codeUnit = string.codeUnitAt(i++);
+
+    // Multiplicar por 1099511628211 (prime number) y XOR
+    hash ^= codeUnit;
+    hash *= 0x100000001b3;
+  }
+
+  // Convertir a un entero de 32 bits (porque IsarId es de 32 bits por defecto)
+  return hash.toSigned(32);
+}
+
+class IsarService {
+  late Future<Isar> db;
+
+  IsarService() {
+    db = openDB();
+  }
+
+  Future<Isar> openDB() async {
+    if (Isar.instanceNames.isEmpty) {
+      final dir = await getApplicationSupportDirectory();
+      return await Isar.open(
+        // Asegurar que todos los esquemas necesarios se abren
+        [UserSchema, RoleSchema, SyncQueueItemSchema],
+        directory: dir.path,
+        inspector: true, // Útil para depuración
+      );
+    }
+    return Isar.getInstance()!;
+  }
+
+  // ----------------------------------------------------
+  // --- MÉTODOS CRUD BÁSICOS (Sesión y Colección) ---
+  // ----------------------------------------------------
+
+  // Guarda el único usuario de la SESIÓN ACTIVA (con tokens)
+  Future<void> saveUser(User user) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.users.clear();
+      await isar.users.put(user);
+    });
+    print(
+      'DEBUG ISAR: Usuario ${user.username} guardado exitosamente (Sesión).',
+    );
+  }
+
+  // Guarda una lista de usuarios (usado para CACHÉ/CARGA INICIAL de la lista)
+  Future<void> saveUsers(List<User> users) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      // Usamos putAll para guardar/actualizar la lista de usuarios.
+      await isar.users.putAll(users);
+    });
+    print(
+      'DEBUG ISAR: ${users.length} usuarios de la lista guardados/actualizados.',
+    );
+  }
+
+  // Devolvemos el único usuario de la sesión activa (con tokens)
+  Future<User?> getActiveUser() async {
+    final isar = await db;
+    // Buscamos el primer (o único) usuario guardado como sesión activa
+    return isar.users.where().findFirst();
+  }
+
+  // Obtiene la lista COMPLETA de usuarios (para el UsersNotifier)
+  Future<List<User>> getAllUsers() async {
+    final isar = await db;
+    return await isar.users.where().findAll();
+  }
+
+  // 🚨 CORRECCIÓN CLAVE PARA LA ELIMINACIÓN 🚨
+  Future<void> deleteUser(String userId) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      // En lugar de usar fastHash(userId) y .delete(isarId),
+      // usamos una consulta filter() sobre el campo 'id' de tipo String.
+      final count = await isar.users
+          .filter()
+          .idEqualTo(userId) // Filtramos por el ID externo (String)
+          .deleteAll(); // Eliminamos el registro encontrado.
+
+      print(
+        'DEBUG ISAR: Eliminados $count usuarios con ID $userId localmente.',
+      );
+    });
+  }
+
+  // Limpia la DB (Usado en el Logout, borra toda la sesión)
+  Future<void> cleanDB() async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.users.clear();
+      await isar.roles.clear();
+      await isar.syncQueueItems.clear();
+    });
+    print('DEBUG ISAR: Base de datos limpiada (Hard Logout).');
+  }
+
+  // ----------------------------------------------------
+  // --- Métodos para Roles y SyncQueue ---
+  // ----------------------------------------------------
+
+  Future<void> saveRoles(List<Role> roles) async {
+    final isar = await db;
+    if (isar == null) return;
+    await isar!.writeTxn(() async {
+      await isar!.roles.putAll(roles); // putAll usa el id único para put/update
+    });
+  }
+
+  // Obtiene todos los roles para el modo offline
+  Future<List<Role>> getAllRoles() async {
+    final isar = await db;
+    if (isar == null) return [];
+    return isar!.roles.where().findAll();
+  }
+
+  Future<void> enqueueSyncItem(SyncQueueItem item) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.syncQueueItems.put(item);
+    });
+    print(
+      'DEBUG ISAR: Operación ${item.operation.name} encolada para ${item.endpoint}.',
+    );
+  }
+
+  // Obtiene el siguiente elemento de la cola, ordenado por tiempo de creación.
+  Future<SyncQueueItem?> getNextSyncItem() async {
+    final isar = await db;
+    // Busca el primer elemento (el más antiguo) para mantener el orden FIFO (First-In, First-Out).
+    return isar.syncQueueItems.where().sortByCreatedAt().findFirst();
+  }
+
+  // Elimina el elemento de la cola después de una sincronización exitosa.
+  Future<void> dequeueSyncItem(int id) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.syncQueueItems.delete(id);
+    });
+    print('DEBUG ISAR: Operación sincronizada y desencolada (ID: $id).');
+  }
+}
+
+final isarServiceProvider = Provider((ref) => IsarService());
