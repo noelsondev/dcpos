@@ -138,6 +138,31 @@ class IsarService {
     return isar!.roles.where().findAll();
   }
 
+  // 🚨 NUEVO MÉTODO CRÍTICO para la sincronización de CREACIÓN
+  Future<void> updateLocalUserWithRealId(String localId, User newUser) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      // 1. Encontrar el usuario temporal por su ID temporal (que está en el campo 'id')
+      final localUserIsarId = await isar.users
+          .filter()
+          .idEqualTo(localId)
+          .isarIdProperty()
+          .findFirst();
+
+      if (localUserIsarId != null) {
+        // 2. Eliminar el registro temporal (que tiene el localId)
+        await isar.users.delete(localUserIsarId);
+      }
+
+      // 3. Guardar el nuevo registro (con el ID real/UUID devuelto por el API)
+      // El método put manejará la inserción del nuevo User.
+      await isar.users.put(newUser);
+    });
+    print(
+      'DEBUG ISAR SYNC: Usuario con ID temporal $localId actualizado a ID real ${newUser.id}.',
+    );
+  }
+
   Future<void> enqueueSyncItem(SyncQueueItem item) async {
     final isar = await db;
     await isar.writeTxn(() async {
