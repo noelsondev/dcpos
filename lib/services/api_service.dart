@@ -5,6 +5,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/token.dart';
 import '../models/user.dart';
+import '../models/company.dart'; // 💡 NUEVO
+import '../models/branch.dart'; // 💡 NUEVO
 import '../providers/auth_provider.dart';
 
 // Proveedor de solo lectura para la URL base
@@ -232,6 +234,80 @@ class ApiService {
           'Error desconocido al eliminar usuario.';
       throw Exception(errorMessage);
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // ----------------------------------------------------------------------
+  Future<List<Company>> fetchCompanies() async {
+    final response = await dio.get('/platform/companies'); //
+    final List<dynamic> jsonList = response.data;
+    return jsonList.map((json) => Company.fromJson(json)).toList();
+  }
+
+  Future<Company> createCompany(Map<String, dynamic> data) async {
+    final response = await dio.post(
+      '/platform/companies', //
+      data: data,
+    );
+    return Company.fromJson(response.data);
+  }
+
+  Future<Company> updateCompany(
+    String companyId,
+    Map<String, dynamic> data,
+  ) async {
+    final response = await dio.patch(
+      '/platform/companies/$companyId', //
+      data: data,
+    );
+    return Company.fromJson(response.data);
+  }
+
+  Future<void> deleteCompany(String companyId) async {
+    await dio.delete('/platform/companies/$companyId'); //
+  }
+
+  // ----------------------------------------------------------------------
+  // 💡 NUEVOS MÉTODOS PARA BRANCH
+  // ----------------------------------------------------------------------
+
+  // Nota: El API solo permite listar branches por company_id
+  Future<List<Branch>> fetchBranches(String companyId) async {
+    final response = await dio.get(
+      '/platform/companies/$companyId/branches', //
+    );
+    final List<dynamic> jsonList = response.data;
+    return jsonList.map((json) => Branch.fromJson(json)).toList();
+  }
+
+  Future<Branch> createBranch(
+    String companyId,
+    Map<String, dynamic> data,
+  ) async {
+    final response = await dio.post(
+      '/platform/companies/$companyId/branches', //
+      data: data,
+    );
+    return Branch.fromJson(response.data);
+  }
+
+  Future<Branch> updateBranch(
+    String branchId,
+    Map<String, dynamic> data,
+  ) async {
+    final response = await dio.patch(
+      '/platform/branches/$branchId', //
+      data: data,
+    );
+    return Branch.fromJson(response.data);
+  }
+
+  // Nota: El API requiere ambos IDs para eliminar
+  Future<void> deleteBranch(String companyId, String branchId) async {
+    await dio.delete(
+      '/platform/companies/$companyId/branches/$branchId', //
+    );
   }
 }
 

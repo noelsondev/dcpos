@@ -136,13 +136,23 @@ const _SyncQueueItemoperationEnumValueMap = {
   r'CREATE_USER': r'CREATE_USER',
   r'UPDATE_USER': r'UPDATE_USER',
   r'DELETE_USER': r'DELETE_USER',
-  r'CREATE_PRODUCT': r'CREATE_PRODUCT',
+  r'CREATE_COMPANY': r'CREATE_COMPANY',
+  r'UPDATE_COMPANY': r'UPDATE_COMPANY',
+  r'DELETE_COMPANY': r'DELETE_COMPANY',
+  r'CREATE_BRANCH': r'CREATE_BRANCH',
+  r'UPDATE_BRANCH': r'UPDATE_BRANCH',
+  r'DELETE_BRANCH': r'DELETE_BRANCH',
 };
 const _SyncQueueItemoperationValueEnumMap = {
   r'CREATE_USER': SyncOperation.CREATE_USER,
   r'UPDATE_USER': SyncOperation.UPDATE_USER,
   r'DELETE_USER': SyncOperation.DELETE_USER,
-  r'CREATE_PRODUCT': SyncOperation.CREATE_PRODUCT,
+  r'CREATE_COMPANY': SyncOperation.CREATE_COMPANY,
+  r'UPDATE_COMPANY': SyncOperation.UPDATE_COMPANY,
+  r'DELETE_COMPANY': SyncOperation.DELETE_COMPANY,
+  r'CREATE_BRANCH': SyncOperation.CREATE_BRANCH,
+  r'UPDATE_BRANCH': SyncOperation.UPDATE_BRANCH,
+  r'DELETE_BRANCH': SyncOperation.DELETE_BRANCH,
 };
 
 Id _syncQueueItemGetId(SyncQueueItem object) {
@@ -1168,5 +1178,10 @@ const _$SyncOperationEnumMap = {
   SyncOperation.CREATE_USER: 'C_R_E_A_T_E__U_S_E_R',
   SyncOperation.UPDATE_USER: 'U_P_D_A_T_E__U_S_E_R',
   SyncOperation.DELETE_USER: 'D_E_L_E_T_E__U_S_E_R',
-  SyncOperation.CREATE_PRODUCT: 'C_R_E_A_T_E__P_R_O_D_U_C_T',
+  SyncOperation.CREATE_COMPANY: 'C_R_E_A_T_E__C_O_M_P_A_N_Y',
+  SyncOperation.UPDATE_COMPANY: 'U_P_D_A_T_E__C_O_M_P_A_N_Y',
+  SyncOperation.DELETE_COMPANY: 'D_E_L_E_T_E__C_O_M_P_A_N_Y',
+  SyncOperation.CREATE_BRANCH: 'C_R_E_A_T_E__B_R_A_N_C_H',
+  SyncOperation.UPDATE_BRANCH: 'U_P_D_A_T_E__B_R_A_N_C_H',
+  SyncOperation.DELETE_BRANCH: 'D_E_L_E_T_E__B_R_A_N_C_H',
 };

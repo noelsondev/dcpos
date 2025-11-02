@@ -1,5 +1,7 @@
 // lib/services/isar_service.dart
 
+import 'package:dcpos/models/branch.dart';
+import 'package:dcpos/models/company.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
@@ -161,6 +163,103 @@ class IsarService {
     print(
       'DEBUG ISAR SYNC: Usuario con ID temporal $localId actualizado a ID real ${newUser.id}.',
     );
+  }
+
+  // ----------------------------------------------------------------------
+  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // ----------------------------------------------------------------------
+  Future<List<Company>> getAllCompanies() async {
+    final isar = await db;
+    return isar.companys.filter().isDeletedEqualTo(false).findAll();
+  }
+
+  Future<void> saveCompanies(List<Company> companies) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.companys.putAll(companies);
+    });
+  }
+
+  Future<void> deleteCompany(String companyId) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.companys.filter().idEqualTo(companyId).deleteAll();
+    });
+  }
+
+  // Actualiza el ID temporal por el ID real después de la sincronización de CREACIÓN
+  Future<void> updateLocalCompanyWithRealId(
+    String localId,
+    Company newCompany,
+  ) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      final localCompanyIsarId = await isar.companys
+          .filter()
+          .idEqualTo(localId)
+          .isarIdProperty()
+          .findFirst();
+
+      if (localCompanyIsarId != null) {
+        await isar.companys.delete(localCompanyIsarId);
+      }
+      // Guardar el nuevo registro con el ID real
+      await isar.companys.put(newCompany);
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // 💡 NUEVOS MÉTODOS PARA BRANCH
+  // ----------------------------------------------------------------------
+  Future<List<Branch>> getAllBranches() async {
+    final isar = await db;
+    return isar.branchs.filter().isDeletedEqualTo(false).findAll();
+  }
+
+  // Obtener branches por companyId (útil para la UI)
+  Future<List<Branch>> getBranchesByCompanyId(String companyId) async {
+    final isar = await db;
+    return isar.branchs
+        .filter()
+        .isDeletedEqualTo(false)
+        .and()
+        .companyIdEqualTo(companyId)
+        .findAll();
+  }
+
+  Future<void> saveBranches(List<Branch> branches) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.branchs.putAll(branches);
+    });
+  }
+
+  Future<void> deleteBranch(String branchId) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      await isar.branchs.filter().idEqualTo(branchId).deleteAll();
+    });
+  }
+
+  // Actualiza el ID temporal por el ID real después de la sincronización de CREACIÓN
+  Future<void> updateLocalBranchWithRealId(
+    String localId,
+    Branch newBranch,
+  ) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      final localBranchIsarId = await isar.branchs
+          .filter()
+          .idEqualTo(localId)
+          .isarIdProperty()
+          .findFirst();
+
+      if (localBranchIsarId != null) {
+        await isar.branchs.delete(localBranchIsarId);
+      }
+      // Guardar el nuevo registro con el ID real
+      await isar.branchs.put(newBranch);
+    });
   }
 
   Future<void> enqueueSyncItem(SyncQueueItem item) async {

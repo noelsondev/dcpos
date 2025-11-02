@@ -7,11 +7,20 @@ part 'sync_queue_item.g.dart';
 
 @JsonEnum(fieldRename: FieldRename.screamingSnake)
 enum SyncOperation {
+  // Operaciones de Usuario
   CREATE_USER,
   UPDATE_USER,
   DELETE_USER,
-  CREATE_PRODUCT,
-  // ... otros casos de sincronización
+
+  // Operaciones de Compañía
+  CREATE_COMPANY,
+  UPDATE_COMPANY,
+  DELETE_COMPANY,
+
+  // Operaciones de Sucursal
+  CREATE_BRANCH,
+  UPDATE_BRANCH,
+  DELETE_BRANCH,
 }
 
 @JsonSerializable()
@@ -31,7 +40,7 @@ class SyncQueueItem {
   /// UUID local generado si es un CREATE, usado para identificar el item local temporalmente.
   final String? localId;
 
-  /// Fecha de creación del ítem en la cola.
+  /// Fecha de creación del ítem en la cola. Se usa para procesar los ítems en orden (FIFO).
   final DateTime createdAt;
 
   // Constructor principal simple (usado por Isar y json_serializable/manual)
