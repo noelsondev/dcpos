@@ -14,6 +14,10 @@ part 'branch.g.dart';
 @JsonSerializable(fieldRename: FieldRename.snake, explicitToJson: true)
 @Collection()
 class Branch {
+  // 💡 CORRECCIÓN CRÍTICA: Se añade @JsonKey(ignore: true) para evitar el error
+  // 'type Null is not a subtype of type num' al deserializar desde el API.
+  // Este campo es exclusivo de Isar y debe ser ignorado por JSON.
+  @JsonKey(ignore: true)
   Id isarId = Isar.autoIncrement;
 
   @Index(unique: true)
@@ -67,15 +71,15 @@ class BranchCreateLocal {
 }
 
 // ----------------------------------------------------------------------
-// 3. MODELO DE ACTUALIZACIÓN (Offline-First) - CORREGIDO
+// 3. MODELO DE ACTUALIZACIÓN (Offline-First)
 // ----------------------------------------------------------------------
-// 💡 CORRECCIÓN: createFactory: false
 @JsonSerializable(
   includeIfNull: false,
   explicitToJson: true,
-  createFactory: false,
+  createFactory: false, // Indica que debemos definir el factory manualmente
 )
 class BranchUpdateLocal {
+  // Los campos ignorados no se incluirán en el código generado de toApiJson()
   @JsonKey(ignore: true)
   final String id;
   @JsonKey(ignore: true)
@@ -85,12 +89,35 @@ class BranchUpdateLocal {
   final String? address;
 
   BranchUpdateLocal({
-    required this.id, // Ahora funciona correctamente
+    required this.id,
     required this.companyId,
     this.name,
     this.address,
   });
 
-  // Usado para la solicitud PATCH al API
-  Map<String, dynamic> toApiJson() => _$BranchUpdateLocalToJson(this);
+  // ✅ Factory manual para deserializar desde la cola local
+  factory BranchUpdateLocal.fromJson(Map<String, dynamic> json) {
+    return BranchUpdateLocal(
+      id: json['id'] as String,
+      companyId: json['companyId'] as String,
+      name: json['name'] as String?,
+      address: json['address'] as String?,
+    );
+  }
+
+  // Mantenemos toApiJson para el request PATCH
+  // Incluye solo name y address (excluyendo nulls por includeIfNull: false).
+  Map<String, dynamic> toApiJson() {
+    return _$BranchUpdateLocalToJson(this);
+  }
+
+  // ✅ Manual toJson para la cola (incluye id y companyId)
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'companyId': companyId,
+      if (name != null) 'name': name,
+      if (address != null) 'address': address,
+    };
+  }
 }

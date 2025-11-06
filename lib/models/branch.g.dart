@@ -1243,10 +1243,9 @@ Branch _$BranchFromJson(Map<String, dynamic> json) => Branch(
       name: json['name'] as String,
       address: json['address'] as String?,
       isDeleted: json['is_deleted'] as bool? ?? false,
-    )..isarId = (json['isar_id'] as num).toInt();
+    );
 
 Map<String, dynamic> _$BranchToJson(Branch instance) => <String, dynamic>{
-      'isar_id': instance.isarId,
       'id': instance.id,
       'company_id': instance.companyId,
       'name': instance.name,

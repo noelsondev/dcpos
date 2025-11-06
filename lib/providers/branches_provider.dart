@@ -2,12 +2,15 @@
 
 import 'dart:convert';
 import 'package:dcpos/providers/companies_provider.dart';
+// ❌ ELIMINADA la importación ambigua/duplicada
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 import '../models/branch.dart';
 import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
+import '../services/sync_service.dart'; // ✅ Única importación del servicio
 
 // Este proveedor gestionará la lista de TODAS las sucursales, aunque la UI las filtre por compañía.
 
@@ -16,77 +19,11 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
+  SyncService get _syncService => ref.read(syncServiceProvider);
 
   // ----------------------------------------------------------------------
-  // LÓGICA DE SINCRONIZACIÓN Y COLA
+  // LÓGICA DE SINCRONIZACIÓN Y FETCH
   // ----------------------------------------------------------------------
-
-  Future<void> _processSyncQueue() async {
-    final isConnected = await _connectivityService.checkConnection();
-    if (!isConnected) return;
-
-    SyncQueueItem? item;
-    while ((item = await _isarService.getNextSyncItem()) != null) {
-      try {
-        final parts = item!.endpoint.split('/');
-        final targetId = parts.last;
-        // Asume que la Company ID es la penúltima parte si el endpoint es /.../company_id/branches/branch_id
-        final companyId = parts.length >= 7 ? parts[parts.length - 4] : '';
-        final data = jsonDecode(item.payload);
-
-        switch (item.operation) {
-          case SyncOperation.CREATE_BRANCH: // 💡 NUEVO
-            // El payload tiene la data, pero necesitamos la companyId para el API.
-            // Debemos extraer companyId del localId/payload/endpoint (el más fiable es el localId si se guardó)
-            final localBranchData = BranchCreateLocal.fromJson(data);
-            final newBranch = await _apiService.createBranch(
-              localBranchData.companyId,
-              localBranchData.toJson(),
-            );
-
-            if (item.localId != null) {
-              await _isarService.updateLocalBranchWithRealId(
-                item.localId!,
-                newBranch,
-              );
-            }
-            break;
-
-          case SyncOperation.UPDATE_BRANCH: // 💡 NUEVO
-            await _apiService.updateBranch(targetId, data);
-            break;
-
-          case SyncOperation.DELETE_BRANCH: // 💡 NUEVO
-            // El targetId es el branchId. Necesitamos companyId para el API.
-            if (companyId.isEmpty)
-              throw Exception(
-                'Company ID no encontrada en el endpoint para DELETE_BRANCH.',
-              );
-            await _apiService.deleteBranch(companyId, targetId);
-            await _isarService.deleteBranch(
-              targetId,
-            ); // Limpieza final de local DB
-            break;
-
-          // Omitir operaciones de Users y Companies
-          default:
-            print(
-              'DEBUG SYNC: Operación no manejada por BranchesNotifier: ${item.operation.name}',
-            );
-            // Si no es una operación de Branch, la volvemos a encolar y salimos
-            await _isarService.enqueueSyncItem(item);
-            return;
-        }
-        await _isarService.dequeueSyncItem(item.id);
-      } catch (e) {
-        print(
-          'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
-        );
-        break;
-      }
-    }
-  }
-
   Future<void> _syncLocalDatabase(List<Branch> onlineBranches) async {
     final localBranches = await _isarService.getAllBranches();
     final Set<String> onlineIds = onlineBranches.map((b) => b.id).toSet();
@@ -114,17 +51,14 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     }
 
     try {
-      await _processSyncQueue(); // 🛑 Sincronizar cambios locales antes de obtener
+      // 🛑 Forzar la sincronización antes de un fetch masivo.
+      _syncService.startSync();
 
-      // Nota: El API no tiene un endpoint para 'todas las branches'
-      // Asumimos que podemos obtener todas las ramas de todas las compañías que el usuario ve
-      // Para simplificar, asumiremos que si el usuario tiene permiso, el API lo devolverá
-      // con un fetchAllBranches si existe. Como no existe, tenemos que hacerlo por Company.
-
-      // Para este ejemplo, simplificaremos asumiendo que el usuario está asociado a una o más compañías:
+      // Obtener todas las ramas de todas las compañías que el usuario ve
       final companies = await ref.read(companiesProvider.future);
       final List<Branch> allOnlineBranches = [];
 
+      // 💡 Por cada compañía, pedir sus ramas (asumiendo que el API lo permite)
       for (final company in companies) {
         final branches = await _apiService.fetchBranches(company.id);
         allOnlineBranches.addAll(branches);
@@ -132,31 +66,170 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
 
       await _syncLocalDatabase(allOnlineBranches);
       return allOnlineBranches;
+    } on DioException catch (e) {
+      if (localBranches.isNotEmpty) {
+        return localBranches;
+      }
+      throw Exception('Fallo al cargar sucursales online: ${e.message}');
     } catch (e) {
       if (localBranches.isNotEmpty) return localBranches;
-      throw Exception(
-        'Fallo al cargar sucursales online y no hay datos offline: $e',
-      );
+      throw Exception('Fallo al cargar sucursales: $e');
     }
   }
 
   // ----------------------------------------------------------------------
-  // CRUD CON FALLBACK OFFLINE
+  // CRUD CON FALLBACK OFFLINE (Implementación Completa)
   // ----------------------------------------------------------------------
 
   Future<void> createBranch(BranchCreateLocal data) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    state = const AsyncValue.loading();
+    final localId = data.localId!;
+
+    // 1. Optimistic Update (Crear Branch con localId)
+    final tempBranch = Branch(
+      id: localId,
+      companyId: data.companyId,
+      name: data.name,
+      address: data.address,
+    );
+    final currentList = state.value ?? [];
+    await _isarService.saveBranches([tempBranch]);
+    final newList = [...currentList.where((b) => b.id != localId), tempBranch];
+    state = AsyncValue.data(newList);
+    print('DEBUG OFFLINE: Sucursal creada localmente y encolada.');
+
+    try {
+      // 2. Intentar Online
+      final newBranch = await _apiService.createBranch(
+        data.companyId,
+        data.toApiJson(),
+      );
+
+      // 3. Éxito: Actualizar el registro en Isar con el ID real
+      await _isarService.updateLocalBranchWithRealId(localId, newBranch);
+
+      // 4. Actualizar estado
+      // ✅ CORRECCIÓN: Tipado explícito <Branch>
+      final updatedList = newList.map<Branch>((b) {
+        return b.id == localId ? newBranch : b;
+      }).toList();
+      state = AsyncValue.data(updatedList);
+      print('✅ ONLINE: Sucursal creada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 5. Fallback Offline: Encolar la operación
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        // ✅ CORRECCIÓN: Uso de argumentos nombrados
+        final syncItem = SyncQueueItem.create(
+          operation: SyncOperation.CREATE_BRANCH,
+          endpoint: '/api/v1/platform/companies/${data.companyId}/branches',
+          payload: jsonEncode(data.toJson()),
+          localId: localId,
+        );
+        await _isarService.enqueueSyncItem(syncItem);
+        // Mantener el estado optimistic update
+      } else {
+        // Error 5xx o de red: Se mantendrá en el estado local temporal.
+        rethrow;
+      }
+    }
   }
 
   Future<void> updateBranch(BranchUpdateLocal data) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    // 1. Optimistic Update
+    final currentList = state.value ?? [];
+    final oldBranch = currentList.firstWhere((b) => b.id == data.id);
+
+    final branchToUpdateLocal = oldBranch.copyWith(
+      name: data.name ?? oldBranch.name,
+      address: data.address ?? oldBranch.address,
+    );
+
+    await _isarService.saveBranches([branchToUpdateLocal]);
+    final newList = currentList.map((b) {
+      return b.id == data.id ? branchToUpdateLocal : b;
+    }).toList();
+    state = AsyncValue.data(newList);
+    print('DEBUG OFFLINE: Sucursal actualizada localmente y encolada.');
+
+    try {
+      // 2. Intentar Online
+      final updatedBranch = await _apiService.updateBranch(
+        data.companyId,
+        data.id,
+        data.toApiJson(),
+      );
+
+      // 3. Éxito: Actualizar en Isar
+      await _isarService.saveBranches([updatedBranch]);
+
+      // 4. Actualizar estado
+      final updatedList = newList.map((b) {
+        return b.id == data.id ? updatedBranch : b;
+      }).toList();
+      state = AsyncValue.data(updatedList);
+      print('✅ ONLINE: Sucursal actualizada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 5. Fallback Offline: Encolar la operación
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        // Uso de argumentos nombrados
+        final syncItem = SyncQueueItem.create(
+          operation: SyncOperation.UPDATE_BRANCH,
+          endpoint:
+              '/api/v1/platform/companies/${data.companyId}/branches/${data.id}',
+          payload: jsonEncode(data.toJson()),
+        );
+        await _isarService.enqueueSyncItem(syncItem);
+        // Mantener el estado optimistic update
+      } else {
+        rethrow;
+      }
+    }
   }
 
   Future<void> deleteBranch(String companyId, String branchId) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    // 1. Optimistic Update
+    final currentList = state.value ?? [];
+    final branchToDelete = currentList.firstWhere((b) => b.id == branchId);
+
+    // Actualizar lista de UI (quitarla visualmente)
+    final newList = currentList.where((b) => b.id != branchId).toList();
+    state = AsyncValue.data(newList);
+
+    try {
+      // 2. Intentar Online
+      await _apiService.deleteBranch(companyId, branchId);
+
+      // 3. Éxito: Eliminar finalmente de Isar
+      await _isarService.deleteBranch(branchId);
+      print('✅ ONLINE: Sucursal eliminada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 4. Fallback Offline: Guardar en Isar como 'isDeleted: true' y encolar
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        await _handleOfflineDelete(companyId, branchId, branchToDelete);
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  // Función auxiliar para el manejo de la eliminación offline
+  Future<void> _handleOfflineDelete(
+    String companyId,
+    String branchId,
+    Branch branchToDelete,
+  ) async {
+    // Marcar como eliminado en Isar y guardar.
+    final branchMarkedForDeletion = branchToDelete.copyWith(isDeleted: true);
+    await _isarService.saveBranches([branchMarkedForDeletion]);
+
+    // Encolar la operación de eliminación
+    final syncItem = SyncQueueItem.create(
+      operation: SyncOperation.DELETE_BRANCH,
+      endpoint: '/api/v1/platform/companies/$companyId/branches/$branchId',
+      payload: '{}',
+    );
+    await _isarService.enqueueSyncItem(syncItem);
+    print('DEBUG OFFLINE: Sucursal marcada para eliminación y encolada.');
   }
 }
 

@@ -5,8 +5,8 @@ import 'package:dcpos/providers/auth_provider.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/sync_queue_item.dart';
-import '../models/user.dart'; // 💡 NECESARIO para User.fromJson
-import '../providers/users_provider.dart'; // 💡 NECESARIO para invalidar
+import '../models/user.dart';
+import '../providers/users_provider.dart';
 import 'api_service.dart';
 import 'isar_service.dart';
 import 'connectivity_service.dart';
@@ -65,25 +65,30 @@ class SyncService {
           break; // La cola está vacía.
         }
 
-        final payloadMap = jsonDecode(item.payload);
-        print('-> Procesando [${item.operation.name}] a ${item.endpoint}');
+        // 🚀 FIX: Capturamos el valor no-nulo en una variable no-nullable.
+        final currentItem = item;
+
+        final payloadMap = jsonDecode(currentItem.payload);
+        print(
+          '-> Procesando [${currentItem.operation.name}] a ${currentItem.endpoint}',
+        );
 
         try {
           dynamic response;
 
-          switch (item.operation) {
+          switch (currentItem.operation) {
             case SyncOperation.CREATE_USER:
               response = await apiService.dio.post(
-                item.endpoint, // '/users/'
+                currentItem.endpoint, // '/users/'
                 data: payloadMap,
               );
 
               // 🚨 CORRECCIÓN CRÍTICA: Reemplazar el usuario temporal con el real
               final createdUser = User.fromJson(response.data);
 
-              if (item.localId != null) {
+              if (currentItem.localId != null) {
                 // 1. Eliminar el usuario temporal (usando el ID local)
-                await isarService.deleteUser(item.localId!);
+                await isarService.deleteUser(currentItem.localId!);
 
                 // 2. Guardar el usuario final con el ID real del servidor
                 await isarService.saveUsers([createdUser]);
@@ -92,7 +97,7 @@ class SyncService {
                 _ref.invalidate(usersProvider);
 
                 print(
-                  '✅ SYNC: Usuario local ${item.localId} actualizado a ServerID ${createdUser.id}',
+                  '✅ SYNC: Usuario local ${currentItem.localId} actualizado a ServerID ${createdUser.id}',
                 );
               }
               break;
@@ -100,7 +105,8 @@ class SyncService {
             case SyncOperation.UPDATE_USER:
               // 🚨 CORRECCIÓN: Usar item.endpoint directamente (ya debe contener el ID)
               response = await apiService.dio.patch(
-                item.endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
+                currentItem
+                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
                 data: payloadMap,
               );
               _ref.invalidate(usersProvider);
@@ -108,7 +114,8 @@ class SyncService {
 
             case SyncOperation.DELETE_USER:
               response = await apiService.dio.delete(
-                item.endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
+                currentItem
+                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
               );
               // La eliminación física ya se maneja en el Notifier si la red está ON.
               // Aquí solo debemos desencolar. La invalidación es opcional ya que DELETE
@@ -116,13 +123,27 @@ class SyncService {
               // _ref.invalidate(usersProvider);
               break;
 
+            case SyncOperation.CREATE_COMPANY:
+            case SyncOperation.UPDATE_COMPANY:
+            case SyncOperation.DELETE_COMPANY:
+            case SyncOperation.CREATE_BRANCH:
+            case SyncOperation.UPDATE_BRANCH:
+            case SyncOperation.DELETE_BRANCH:
+              // Estas operaciones se manejan en sus respectivos Notifiers (BranchesNotifier, CompaniesNotifier)
+              // Aquí solo las desencolamos si son exitosas (aunque deberían ser manejadas por el notifier al recargar)
+              // Para mantener la lógica separada, solo agregamos el caso aquí para evitar el 'default'.
+              print(
+                'Operación de Compañía/Sucursal gestionada en su propio Notifier. Saltando.',
+              );
+              break;
+
             default:
-              print('Operación no implementada: ${item.operation}');
+              print('Operación no implementada: ${currentItem.operation}');
               break;
           }
 
           // Si la llamada es exitosa, desencolar
-          await isarService.dequeueSyncItem(item.id);
+          await isarService.dequeueSyncItem(currentItem.id);
         } catch (e) {
           // 🚨 Manejo de Falla: Detiene la cola y muestra el error del servidor.
           print('❌ FALLA Sincronización: ${e.toString()}');

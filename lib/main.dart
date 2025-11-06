@@ -1,10 +1,14 @@
+// lib/main.dart
+
+import 'package:dcpos/screens/branches_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/auth_provider.dart';
 import 'screens/home_screen.dart'; // Pantalla principal
 import 'screens/login_screen.dart'; // Pantalla de login
-import 'screens/companies_screen.dart'; // ⚠️ Importar la nueva pantalla
+import 'screens/companies_screen.dart';
+import 'screens/users_screen.dart'; // Asumiendo que existe
 
 void main() {
   // Riverpod requiere que la aplicación esté envuelta en un ProviderScope
@@ -47,7 +51,9 @@ class MyApp extends ConsumerWidget {
       // Opcional: Definición de rutas nombradas si las necesita
       routes: {
         '/companies': (context) => const CompaniesScreen(),
-        // Agregue otras rutas como /branches, /users, etc.
+        '/users': (context) =>
+            const UsersScreen(), // Asumiendo que esta ruta existe
+        '/branches': (context) => const BranchesScreen(), // ⬅️ NUEVA RUTA
       },
     );
   }

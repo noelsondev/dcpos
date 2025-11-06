@@ -1,84 +1,62 @@
 // lib/services/api_service.dart
-
+import 'package:dcpos/models/branch.dart'; // 💡 NUEVO
 import 'package:dcpos/models/role.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/token.dart';
 import '../models/user.dart';
-import '../models/company.dart'; // 💡 NUEVO
-import '../models/branch.dart'; // 💡 NUEVO
-import '../providers/auth_provider.dart';
+import '../models/company.dart';
+import '../providers/auth_provider.dart'; // Para leer el token
 
 // Proveedor de solo lectura para la URL base
 final apiUrlProvider = Provider<String>(
-  (ref) => 'http://127.0.0.1:8000/api/v1',
+  (ref) => 'http://localhost:8000/api/v1', // ⚠️ CAMBIA ESTA URL POR TU URL REAL
 );
 
-// Usamos un Provider separado para Dio para evitar bucles de dependencia
-final dioInstanceProvider = Provider((ref) {
-  // 1. Crear la instancia de Dio
-  final dio = Dio(
-    BaseOptions(
-      baseUrl: ref.watch(apiUrlProvider),
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 10),
-      contentType: 'application/json',
-    ),
-  );
-
-  // LogInterceptor correctamente agregado
-  dio.interceptors.add(
-    LogInterceptor(
-      requestBody: true,
-      responseBody: true,
-      logPrint: (o) => print('DIO LOG: $o'),
-    ),
-  );
-
-  // 2. Retornar la instancia configurada
-  return dio;
-});
-
 // ---------------------------------------------
-// CLASE INTERCEPTOR PARA EL MANEJO DE TOKEN
+// INTERCEPTOR PARA AUTH Y REFRESH (COMPLETO)
 // ---------------------------------------------
 
-class AuthInterceptor extends QueuedInterceptor {
-  final Ref ref;
+class AuthInterceptor extends Interceptor {
+  final Ref _ref;
   final ApiService apiService;
   bool isRefreshing = false;
 
-  AuthInterceptor(this.ref, this.apiService);
+  AuthInterceptor(this._ref, this.apiService);
 
+  // Sobreescribe el método onRequest para adjuntar el Access Token
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final authNotifier = ref.read(authProvider.notifier);
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
+    // 💡 No añadir token si es la llamada de login o refresh
+    if (options.path.contains('/auth/login') ||
+        options.path.contains('/auth/refresh')) {
+      return handler.next(options);
+    }
+
+    final authNotifier = _ref.read(authProvider.notifier);
     final token = authNotifier.accessToken;
 
-    if (token != null &&
-        !options.path.contains('/auth/login') &&
-        !options.path.contains('/auth/refresh')) {
+    if (token != null) {
       options.headers['Authorization'] = 'Bearer $token';
     }
+
     return handler.next(options);
   }
 
+  // Sobreescribe el método onError para manejar el 401 Unauthorized
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    final authNotifier = ref.read(authProvider.notifier);
-    final String? refresh = authNotifier.refreshToken;
+    final authNotifier = _ref.read(authProvider.notifier);
+    final refresh = authNotifier.refreshToken;
 
-    print('🧩 DEBUG onError PATH: ${err.requestOptions.path}');
-    print('🧩 DEBUG onError STATUS: ${err.response?.statusCode}');
-
-    // 🚨 MANEJO DE REDIRECCIÓN 307:
-    // Si el error es una redirección 307, es probable que la próxima ruta (con slash)
-    // funcione automáticamente con Dio. Si el error persiste, simplemente devolvemos
-    // la excepción para que el DioException se resuelva en el .fetch del interceptor
-    // o en el manejo del Notifier.
-    if (err.response?.statusCode == 307) {
+    // Evitar loop infinito: si la petición fallida ya era la de refresh, o si es un 307
+    if (err.requestOptions.path.contains('/auth/refresh') ||
+        err.response?.statusCode == 307) {
       print(
-        'DEBUG INTERCEPTOR: Se detectó 307 Redirection. Dejando que Dio lo maneje.',
+        'DEBUG INTERCEPTOR: Se detectó 307 Redirection o fallo en /refresh. Dejando que Dio lo maneje.',
       );
       return handler.next(err);
     }
@@ -104,6 +82,7 @@ class AuthInterceptor extends QueuedInterceptor {
       // Reintentar la solicitud original con el nuevo token
       final options = err.requestOptions;
       options.headers['Authorization'] = 'Bearer ${authNotifier.accessToken}';
+
       // Utilizamos .fetch para reintentar la llamada.
       final response = await apiService.dio.fetch(options);
       return handler.resolve(response);
@@ -114,17 +93,20 @@ class AuthInterceptor extends QueuedInterceptor {
 }
 
 // ---------------------------------------------
-// CLASE API SERVICE
+// CLASE API SERVICE (CORREGIDA)
 // ---------------------------------------------
 
 class ApiService {
   final Dio dio;
   final Ref _ref;
+  String get _apiUrl => _ref.read(apiUrlProvider);
 
-  ApiService(this.dio, this._ref);
+  ApiService(this.dio, this._ref) {
+    // 💡 Asegúrate de que Dio use la URL base
+    dio.options.baseUrl = _apiUrl;
+  }
 
   // --- Auth Endpoints ---
-
   Future<Token> login(String username, String password) async {
     try {
       final response = await dio.post(
@@ -145,54 +127,48 @@ class ApiService {
     }
   }
 
-  Future<User> fetchMe() async {
+  Future<Token> refreshToken(String refreshToken) async {
     try {
-      final response = await dio.get('/auth/me');
-
-      if (response.statusCode == 200) {
-        return User.fromJson(response.data);
-      }
-      throw Exception(
-        'Error al obtener datos del usuario: ${response.statusCode}',
+      final response = await dio.post(
+        '/auth/refresh',
+        // El API requiere el Refresh Token en el header como Bearer
+        options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
       );
-    } catch (e) {
-      rethrow;
+      return Token.fromJson(response.data);
+    } on DioException catch (e) {
+      final errorMessage = e.response?.data?['detail'] ?? 'Fallo al refrescar.';
+      throw Exception(errorMessage);
     }
   }
 
-  Future<Token> refreshToken(String refreshToken) async {
-    final dioRefresh = Dio(dio.options);
-
-    final response = await dioRefresh.post(
-      '/auth/refresh',
-      options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
-    );
-    return Token.fromJson(response.data);
+  Future<User> fetchMe() async {
+    try {
+      final response = await dio.get('/auth/me');
+      return User.fromJson(response.data);
+    } on DioException catch (e) {
+      final errorMessage =
+          e.response?.data?['detail'] ?? 'Error al obtener usuario.';
+      throw Exception(errorMessage);
+    }
   }
 
-  // --- Endpoints de Roles ---
+  // --- Role Endpoints ---
   Future<List<Role>> fetchAllRoles() async {
-    final response = await dio.get('/roles');
-
-    // 1. Aseguramos que la respuesta es un Map (el objeto JSON externo)
-    final data = response.data as Map<String, dynamic>;
-
-    // 2. Extraemos la lista del campo "roles"
-    final rolesJsonList = data['roles'] as List;
-
-    // 3. Mapeamos la lista extraída al modelo Role
-    return rolesJsonList
-        .map((json) => Role.fromJson(json as Map<String, dynamic>))
-        .toList();
+    try {
+      final response = await dio.get('/roles/');
+      final List<dynamic> jsonList = response.data;
+      return jsonList.map((json) => Role.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener roles: ${e.message}');
+    }
   }
 
-  // --- Endpoints de Usuarios (CRUD) ---
+  // --- User Endpoints ---
   Future<List<User>> fetchAllUsers() async {
     try {
-      // 🚨 CORRECCIÓN: Añadir la barra final para evitar el 307 Redirect.
       final response = await dio.get('/users/');
-      final List<dynamic> userList = response.data;
-      return userList.map((json) => User.fromJson(json)).toList();
+      final List<dynamic> jsonList = response.data;
+      return jsonList.map((json) => User.fromJson(json)).toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener usuarios: ${e.message}');
     }
@@ -237,18 +213,18 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // 💡 MÉTODOS PARA COMPANY
   // ----------------------------------------------------------------------
   Future<List<Company>> fetchCompanies() async {
-    final response = await dio.get('/platform/companies'); //
+    final response = await dio.get('/platform/companies');
     final List<dynamic> jsonList = response.data;
     return jsonList.map((json) => Company.fromJson(json)).toList();
   }
 
   Future<Company> createCompany(Map<String, dynamic> data) async {
     final response = await dio.post(
-      '/platform/companies', //
-      data: data,
+      '/platform/companies',
+      data: data, // ✅ CORRECCIÓN: Asegurar que los datos se envían
     );
     return Company.fromJson(response.data);
   }
@@ -258,25 +234,21 @@ class ApiService {
     Map<String, dynamic> data,
   ) async {
     final response = await dio.patch(
-      '/platform/companies/$companyId', //
+      '/platform/companies/$companyId',
       data: data,
     );
     return Company.fromJson(response.data);
   }
 
   Future<void> deleteCompany(String companyId) async {
-    await dio.delete('/platform/companies/$companyId'); //
+    await dio.delete('/platform/companies/$companyId');
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA BRANCH
+  // 💡 MÉTODOS PARA BRANCH (NUEVOS)
   // ----------------------------------------------------------------------
-
-  // Nota: El API solo permite listar branches por company_id
   Future<List<Branch>> fetchBranches(String companyId) async {
-    final response = await dio.get(
-      '/platform/companies/$companyId/branches', //
-    );
+    final response = await dio.get('/platform/companies/$companyId/branches');
     final List<dynamic> jsonList = response.data;
     return jsonList.map((json) => Branch.fromJson(json)).toList();
   }
@@ -286,34 +258,34 @@ class ApiService {
     Map<String, dynamic> data,
   ) async {
     final response = await dio.post(
-      '/platform/companies/$companyId/branches', //
+      '/platform/companies/$companyId/branches',
       data: data,
     );
     return Branch.fromJson(response.data);
   }
 
   Future<Branch> updateBranch(
+    String companyId,
     String branchId,
     Map<String, dynamic> data,
   ) async {
     final response = await dio.patch(
-      '/platform/branches/$branchId', //
+      '/platform/companies/$companyId/branches/$branchId',
       data: data,
     );
     return Branch.fromJson(response.data);
   }
 
-  // Nota: El API requiere ambos IDs para eliminar
   Future<void> deleteBranch(String companyId, String branchId) async {
-    await dio.delete(
-      '/platform/companies/$companyId/branches/$branchId', //
-    );
+    await dio.delete('/platform/companies/$companyId/branches/$branchId');
   }
 }
 
 // ---------------------------------------------
 // PROVEEDOR DE API SERVICE (CORRECTO)
 // ---------------------------------------------
+
+final dioInstanceProvider = Provider((ref) => Dio());
 
 final apiServiceProvider = Provider((ref) {
   final dio = ref.watch(dioInstanceProvider);
@@ -323,6 +295,5 @@ final apiServiceProvider = Provider((ref) {
   if (dio.interceptors.whereType<AuthInterceptor>().isEmpty) {
     dio.interceptors.add(AuthInterceptor(ref, apiService));
   }
-
   return apiService;
 });

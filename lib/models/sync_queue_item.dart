@@ -1,10 +1,14 @@
-// lib/models/sync_queue_item.dart
-
 import 'package:isar/isar.dart';
 import 'package:json_annotation/json_annotation.dart';
 
 part 'sync_queue_item.g.dart';
 
+// ----------------------------------------------------------------------
+// 1. ENUM DE OPERACIONES DE SINCRONIZACIÓN
+// ----------------------------------------------------------------------
+
+/// Define las operaciones CRUD que pueden ser encoladas para sincronización
+/// cuando el dispositivo está sin conexión.
 @JsonEnum(fieldRename: FieldRename.screamingSnake)
 enum SyncOperation {
   // Operaciones de Usuario
@@ -23,13 +27,17 @@ enum SyncOperation {
   DELETE_BRANCH,
 }
 
+// ----------------------------------------------------------------------
+// 2. MODELO DE COLA DE SINCRONIZACIÓN (ISAR)
+// ----------------------------------------------------------------------
+
 @JsonSerializable()
 @Collection()
 class SyncQueueItem {
   Id id = Isar.autoIncrement;
 
   @Enumerated(EnumType.name)
-  final SyncOperation operation;
+  final SyncOperation operation; // 👈 Aquí se usa la enumeración
 
   /// El endpoint REST al que se debe enviar el payload (ej: /api/v1/users/)
   final String endpoint;
@@ -43,7 +51,7 @@ class SyncQueueItem {
   /// Fecha de creación del ítem en la cola. Se usa para procesar los ítems en orden (FIFO).
   final DateTime createdAt;
 
-  // 💡 CAMPO AÑADIDO: Contador de reintentos. Debe ser nullable.
+  /// Contador de reintentos.
   final int? retryCount;
 
   // Constructor principal simple (usado por Isar y json_serializable/manual)
@@ -53,7 +61,7 @@ class SyncQueueItem {
     required this.payload,
     this.localId,
     required this.createdAt,
-    this.retryCount = 0, // 💡 Añadido como opcional con valor por defecto
+    this.retryCount = 0,
   });
 
   /// Fábrica auxiliar para crear el ítem con la hora actual (`DateTime.now()`) automáticamente.
@@ -62,7 +70,7 @@ class SyncQueueItem {
     required String endpoint,
     required String payload,
     String? localId,
-    int retryCount = 0, // 💡 Añadido al factory
+    int retryCount = 0,
   }) {
     return SyncQueueItem(
       operation: operation,
@@ -70,7 +78,7 @@ class SyncQueueItem {
       payload: payload,
       localId: localId,
       createdAt: DateTime.now(),
-      retryCount: retryCount, // Usar el valor por defecto
+      retryCount: retryCount,
     );
   }
 

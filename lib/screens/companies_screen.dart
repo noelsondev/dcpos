@@ -1,12 +1,11 @@
 //lib/screens/companies_screen.dart
 
-import 'package:dcpos/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/companies_provider.dart';
 import 'company_form_screen.dart';
-// import 'branches_screen.dart'; // 💡 Preparando para la siguiente pantalla
+import 'branches_screen.dart'; // 💡 CORREGIDO: Importación de BranchesScreen
 
 class CompaniesScreen extends ConsumerWidget {
   const CompaniesScreen({super.key});
@@ -67,10 +66,13 @@ class CompaniesScreen extends ConsumerWidget {
                 title: Text(company.name),
                 subtitle: Text('Slug: ${company.slug}'),
                 onTap: () {
-                  // Navegar a la pantalla de Sucursales de esta compañía
-                  Navigator.of(
-                    context,
-                  ).push(MaterialPageRoute(builder: (context) => HomeScreen()));
+                  // ✅ CORREGIDO: Navegar a BranchesScreen, pasando el company.id
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          BranchesScreen(selectedCompanyId: company.id),
+                    ),
+                  );
                 },
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,

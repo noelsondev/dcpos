@@ -1,12 +1,13 @@
 // lib/screens/home_screen.dart
 
+import 'package:dcpos/screens/branches_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'users_screen.dart';
-import 'companies_screen.dart'; // 💡 NUEVA IMPORTACIÓN PARA COMPAÑÍAS
+import 'companies_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -105,7 +106,21 @@ class HomeScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 20),
 
-            // 3. BOTÓN PARA NAVEGAR A GESTIÓN DE USUARIOS
+            // 3. BOTÓN PARA NAVEGAR A GESTIÓN DE SUCURSALES 🏛️ ⬅️ NUEVO
+            ElevatedButton.icon(
+              icon: const Icon(Icons.apartment),
+              label: const Text('GESTIÓN DE SUCURSALES'),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const BranchesScreen(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+
+            // 4. BOTÓN PARA NAVEGAR A GESTIÓN DE USUARIOS
             ElevatedButton.icon(
               icon: const Icon(Icons.group),
               label: const Text('GESTIÓN DE USUARIOS'),
