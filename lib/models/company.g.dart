@@ -7,13 +7,19 @@ part of 'company.dart';
 // **************************************************************************
 
 abstract class _$CompanyCWProxy {
+  Company isarId(int isarId);
+
   Company id(String id);
 
   Company name(String name);
 
   Company slug(String slug);
 
+  Company createdAt(String? createdAt);
+
   Company isDeleted(bool isDeleted);
+
+  Company isSyncPending(bool isSyncPending);
 
   /// This function **does support** nullification of nullable fields. All `null` values passed to `non-nullable` fields will be ignored. You can also use `Company(...).copyWith.fieldName(...)` to override fields one at a time with nullification support.
   ///
@@ -22,10 +28,13 @@ abstract class _$CompanyCWProxy {
   /// Company(...).copyWith(id: 12, name: "My name")
   /// ````
   Company call({
+    int? isarId,
     String? id,
     String? name,
     String? slug,
+    String? createdAt,
     bool? isDeleted,
+    bool? isSyncPending,
   });
 }
 
@@ -34,6 +43,9 @@ class _$CompanyCWProxyImpl implements _$CompanyCWProxy {
   const _$CompanyCWProxyImpl(this._value);
 
   final Company _value;
+
+  @override
+  Company isarId(int isarId) => this(isarId: isarId);
 
   @override
   Company id(String id) => this(id: id);
@@ -45,7 +57,14 @@ class _$CompanyCWProxyImpl implements _$CompanyCWProxy {
   Company slug(String slug) => this(slug: slug);
 
   @override
+  Company createdAt(String? createdAt) => this(createdAt: createdAt);
+
+  @override
   Company isDeleted(bool isDeleted) => this(isDeleted: isDeleted);
+
+  @override
+  Company isSyncPending(bool isSyncPending) =>
+      this(isSyncPending: isSyncPending);
 
   @override
 
@@ -56,12 +75,19 @@ class _$CompanyCWProxyImpl implements _$CompanyCWProxy {
   /// Company(...).copyWith(id: 12, name: "My name")
   /// ````
   Company call({
+    Object? isarId = const $CopyWithPlaceholder(),
     Object? id = const $CopyWithPlaceholder(),
     Object? name = const $CopyWithPlaceholder(),
     Object? slug = const $CopyWithPlaceholder(),
+    Object? createdAt = const $CopyWithPlaceholder(),
     Object? isDeleted = const $CopyWithPlaceholder(),
+    Object? isSyncPending = const $CopyWithPlaceholder(),
   }) {
     return Company(
+      isarId: isarId == const $CopyWithPlaceholder() || isarId == null
+          ? _value.isarId
+          // ignore: cast_nullable_to_non_nullable
+          : isarId as int,
       id: id == const $CopyWithPlaceholder() || id == null
           ? _value.id
           // ignore: cast_nullable_to_non_nullable
@@ -74,10 +100,19 @@ class _$CompanyCWProxyImpl implements _$CompanyCWProxy {
           ? _value.slug
           // ignore: cast_nullable_to_non_nullable
           : slug as String,
+      createdAt: createdAt == const $CopyWithPlaceholder()
+          ? _value.createdAt
+          // ignore: cast_nullable_to_non_nullable
+          : createdAt as String?,
       isDeleted: isDeleted == const $CopyWithPlaceholder() || isDeleted == null
           ? _value.isDeleted
           // ignore: cast_nullable_to_non_nullable
           : isDeleted as bool,
+      isSyncPending:
+          isSyncPending == const $CopyWithPlaceholder() || isSyncPending == null
+              ? _value.isSyncPending
+              // ignore: cast_nullable_to_non_nullable
+              : isSyncPending as bool,
     );
   }
 }
@@ -103,23 +138,33 @@ const CompanySchema = CollectionSchema(
   name: r'Company',
   id: -3921622125198845844,
   properties: {
-    r'id': PropertySchema(
+    r'createdAt': PropertySchema(
       id: 0,
+      name: r'createdAt',
+      type: IsarType.string,
+    ),
+    r'id': PropertySchema(
+      id: 1,
       name: r'id',
       type: IsarType.string,
     ),
     r'isDeleted': PropertySchema(
-      id: 1,
+      id: 2,
       name: r'isDeleted',
       type: IsarType.bool,
     ),
+    r'isSyncPending': PropertySchema(
+      id: 3,
+      name: r'isSyncPending',
+      type: IsarType.bool,
+    ),
     r'name': PropertySchema(
-      id: 2,
+      id: 4,
       name: r'name',
       type: IsarType.string,
     ),
     r'slug': PropertySchema(
-      id: 3,
+      id: 5,
       name: r'slug',
       type: IsarType.string,
     )
@@ -158,6 +203,12 @@ int _companyEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
+  {
+    final value = object.createdAt;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.id.length * 3;
   bytesCount += 3 + object.name.length * 3;
   bytesCount += 3 + object.slug.length * 3;
@@ -170,10 +221,12 @@ void _companySerialize(
   List<int> offsets,
   Map<Type, List<int>> allOffsets,
 ) {
-  writer.writeString(offsets[0], object.id);
-  writer.writeBool(offsets[1], object.isDeleted);
-  writer.writeString(offsets[2], object.name);
-  writer.writeString(offsets[3], object.slug);
+  writer.writeString(offsets[0], object.createdAt);
+  writer.writeString(offsets[1], object.id);
+  writer.writeBool(offsets[2], object.isDeleted);
+  writer.writeBool(offsets[3], object.isSyncPending);
+  writer.writeString(offsets[4], object.name);
+  writer.writeString(offsets[5], object.slug);
 }
 
 Company _companyDeserialize(
@@ -183,12 +236,14 @@ Company _companyDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = Company(
-    id: reader.readString(offsets[0]),
-    isDeleted: reader.readBoolOrNull(offsets[1]) ?? false,
-    name: reader.readString(offsets[2]),
-    slug: reader.readString(offsets[3]),
+    createdAt: reader.readStringOrNull(offsets[0]),
+    id: reader.readString(offsets[1]),
+    isDeleted: reader.readBoolOrNull(offsets[2]) ?? false,
+    isSyncPending: reader.readBoolOrNull(offsets[3]) ?? false,
+    isarId: id,
+    name: reader.readString(offsets[4]),
+    slug: reader.readString(offsets[5]),
   );
-  object.isarId = id;
   return object;
 }
 
@@ -200,12 +255,16 @@ P _companyDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 1:
-      return (reader.readBoolOrNull(offset) ?? false) as P;
-    case 2:
       return (reader.readString(offset)) as P;
+    case 2:
+      return (reader.readBoolOrNull(offset) ?? false) as P;
     case 3:
+      return (reader.readBoolOrNull(offset) ?? false) as P;
+    case 4:
+      return (reader.readString(offset)) as P;
+    case 5:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -399,6 +458,152 @@ extension CompanyQueryWhere on QueryBuilder<Company, Company, QWhereClause> {
 
 extension CompanyQueryFilter
     on QueryBuilder<Company, Company, QFilterCondition> {
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'createdAt',
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'createdAt',
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'createdAt',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'createdAt',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> createdAtIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'createdAt',
+        value: '',
+      ));
+    });
+  }
+
   QueryBuilder<Company, Company, QAfterFilterCondition> idEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -533,6 +738,16 @@ extension CompanyQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
         property: r'isDeleted',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterFilterCondition> isSyncPendingEqualTo(
+      bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isSyncPending',
         value: value,
       ));
     });
@@ -859,6 +1074,18 @@ extension CompanyQueryLinks
     on QueryBuilder<Company, Company, QFilterCondition> {}
 
 extension CompanyQuerySortBy on QueryBuilder<Company, Company, QSortBy> {
+  QueryBuilder<Company, Company, QAfterSortBy> sortByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> sortByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<Company, Company, QAfterSortBy> sortById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -880,6 +1107,18 @@ extension CompanyQuerySortBy on QueryBuilder<Company, Company, QSortBy> {
   QueryBuilder<Company, Company, QAfterSortBy> sortByIsDeletedDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isDeleted', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> sortByIsSyncPending() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isSyncPending', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> sortByIsSyncPendingDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isSyncPending', Sort.desc);
     });
   }
 
@@ -910,6 +1149,18 @@ extension CompanyQuerySortBy on QueryBuilder<Company, Company, QSortBy> {
 
 extension CompanyQuerySortThenBy
     on QueryBuilder<Company, Company, QSortThenBy> {
+  QueryBuilder<Company, Company, QAfterSortBy> thenByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> thenByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<Company, Company, QAfterSortBy> thenById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -931,6 +1182,18 @@ extension CompanyQuerySortThenBy
   QueryBuilder<Company, Company, QAfterSortBy> thenByIsDeletedDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isDeleted', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> thenByIsSyncPending() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isSyncPending', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Company, Company, QAfterSortBy> thenByIsSyncPendingDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isSyncPending', Sort.desc);
     });
   }
 
@@ -973,6 +1236,13 @@ extension CompanyQuerySortThenBy
 
 extension CompanyQueryWhereDistinct
     on QueryBuilder<Company, Company, QDistinct> {
+  QueryBuilder<Company, Company, QDistinct> distinctByCreatedAt(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'createdAt', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<Company, Company, QDistinct> distinctById(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -983,6 +1253,12 @@ extension CompanyQueryWhereDistinct
   QueryBuilder<Company, Company, QDistinct> distinctByIsDeleted() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'isDeleted');
+    });
+  }
+
+  QueryBuilder<Company, Company, QDistinct> distinctByIsSyncPending() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isSyncPending');
     });
   }
 
@@ -1009,6 +1285,12 @@ extension CompanyQueryProperty
     });
   }
 
+  QueryBuilder<Company, String?, QQueryOperations> createdAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'createdAt');
+    });
+  }
+
   QueryBuilder<Company, String, QQueryOperations> idProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'id');
@@ -1018,6 +1300,12 @@ extension CompanyQueryProperty
   QueryBuilder<Company, bool, QQueryOperations> isDeletedProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'isDeleted');
+    });
+  }
+
+  QueryBuilder<Company, bool, QQueryOperations> isSyncPendingProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isSyncPending');
     });
   }
 
@@ -1038,18 +1326,21 @@ extension CompanyQueryProperty
 // JsonSerializableGenerator
 // **************************************************************************
 
-Company _$CompanyFromJson(Map<String, dynamic> json) => Company(
+Company _$CompanyFromJson(Map json) => Company(
+      isarId: (json['isar_id'] as num?)?.toInt() ?? Isar.autoIncrement,
       id: json['id'] as String,
       name: json['name'] as String,
       slug: json['slug'] as String,
+      createdAt: json['created_at'] as String?,
       isDeleted: json['is_deleted'] as bool? ?? false,
-    )..isarId = (json['isar_id'] as num).toInt();
+    );
 
 Map<String, dynamic> _$CompanyToJson(Company instance) => <String, dynamic>{
       'isar_id': instance.isarId,
       'id': instance.id,
       'name': instance.name,
       'slug': instance.slug,
+      'created_at': instance.createdAt,
       'is_deleted': instance.isDeleted,
     };
 

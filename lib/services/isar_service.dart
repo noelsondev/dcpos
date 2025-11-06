@@ -44,7 +44,13 @@ class IsarService {
       final dir = await getApplicationSupportDirectory();
       return await Isar.open(
         // Asegurar que todos los esquemas necesarios se abren
-        [UserSchema, RoleSchema, SyncQueueItemSchema],
+        [
+          UserSchema,
+          RoleSchema,
+          SyncQueueItemSchema,
+          CompanySchema,
+          BranchSchema,
+        ],
         directory: dir.path,
         inspector: true, // Útil para depuración
       );

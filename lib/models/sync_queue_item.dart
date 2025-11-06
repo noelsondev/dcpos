@@ -43,6 +43,9 @@ class SyncQueueItem {
   /// Fecha de creación del ítem en la cola. Se usa para procesar los ítems en orden (FIFO).
   final DateTime createdAt;
 
+  // 💡 CAMPO AÑADIDO: Contador de reintentos. Debe ser nullable.
+  final int? retryCount;
+
   // Constructor principal simple (usado por Isar y json_serializable/manual)
   SyncQueueItem({
     required this.operation,
@@ -50,6 +53,7 @@ class SyncQueueItem {
     required this.payload,
     this.localId,
     required this.createdAt,
+    this.retryCount = 0, // 💡 Añadido como opcional con valor por defecto
   });
 
   /// Fábrica auxiliar para crear el ítem con la hora actual (`DateTime.now()`) automáticamente.
@@ -58,6 +62,7 @@ class SyncQueueItem {
     required String endpoint,
     required String payload,
     String? localId,
+    int retryCount = 0, // 💡 Añadido al factory
   }) {
     return SyncQueueItem(
       operation: operation,
@@ -65,6 +70,7 @@ class SyncQueueItem {
       payload: payload,
       localId: localId,
       createdAt: DateTime.now(),
+      retryCount: retryCount, // Usar el valor por defecto
     );
   }
 

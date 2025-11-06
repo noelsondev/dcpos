@@ -42,6 +42,11 @@ const SyncQueueItemSchema = CollectionSchema(
       id: 4,
       name: r'payload',
       type: IsarType.string,
+    ),
+    r'retryCount': PropertySchema(
+      id: 5,
+      name: r'retryCount',
+      type: IsarType.long,
     )
   },
   estimateSize: _syncQueueItemEstimateSize,
@@ -87,6 +92,7 @@ void _syncQueueItemSerialize(
   writer.writeString(offsets[2], object.localId);
   writer.writeString(offsets[3], object.operation.name);
   writer.writeString(offsets[4], object.payload);
+  writer.writeLong(offsets[5], object.retryCount);
 }
 
 SyncQueueItem _syncQueueItemDeserialize(
@@ -103,6 +109,7 @@ SyncQueueItem _syncQueueItemDeserialize(
             reader.readStringOrNull(offsets[3])] ??
         SyncOperation.CREATE_USER,
     payload: reader.readString(offsets[4]),
+    retryCount: reader.readLongOrNull(offsets[5]),
   );
   object.id = id;
   return object;
@@ -127,6 +134,8 @@ P _syncQueueItemDeserializeProp<P>(
           SyncOperation.CREATE_USER) as P;
     case 4:
       return (reader.readString(offset)) as P;
+    case 5:
+      return (reader.readLongOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
   }
@@ -922,6 +931,80 @@ extension SyncQueueItemQueryFilter
       ));
     });
   }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'retryCount',
+      ));
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'retryCount',
+      ));
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'retryCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'retryCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'retryCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterFilterCondition>
+      retryCountBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'retryCount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
 }
 
 extension SyncQueueItemQueryObject
@@ -992,6 +1075,19 @@ extension SyncQueueItemQuerySortBy
   QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterSortBy> sortByPayloadDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'payload', Sort.desc);
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterSortBy> sortByRetryCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'retryCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterSortBy>
+      sortByRetryCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'retryCount', Sort.desc);
     });
   }
 }
@@ -1072,6 +1168,19 @@ extension SyncQueueItemQuerySortThenBy
       return query.addSortBy(r'payload', Sort.desc);
     });
   }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterSortBy> thenByRetryCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'retryCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QAfterSortBy>
+      thenByRetryCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'retryCount', Sort.desc);
+    });
+  }
 }
 
 extension SyncQueueItemQueryWhereDistinct
@@ -1107,6 +1216,12 @@ extension SyncQueueItemQueryWhereDistinct
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'payload', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<SyncQueueItem, SyncQueueItem, QDistinct> distinctByRetryCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'retryCount');
     });
   }
 }
@@ -1149,6 +1264,12 @@ extension SyncQueueItemQueryProperty
       return query.addPropertyName(r'payload');
     });
   }
+
+  QueryBuilder<SyncQueueItem, int?, QQueryOperations> retryCountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'retryCount');
+    });
+  }
 }
 
 // **************************************************************************
@@ -1162,6 +1283,7 @@ SyncQueueItem _$SyncQueueItemFromJson(Map<String, dynamic> json) =>
       payload: json['payload'] as String,
       localId: json['localId'] as String?,
       createdAt: DateTime.parse(json['createdAt'] as String),
+      retryCount: (json['retryCount'] as num?)?.toInt() ?? 0,
     )..id = (json['id'] as num).toInt();
 
 Map<String, dynamic> _$SyncQueueItemToJson(SyncQueueItem instance) =>
@@ -1172,6 +1294,7 @@ Map<String, dynamic> _$SyncQueueItemToJson(SyncQueueItem instance) =>
       'payload': instance.payload,
       'localId': instance.localId,
       'createdAt': instance.createdAt.toIso8601String(),
+      'retryCount': instance.retryCount,
     };
 
 const _$SyncOperationEnumMap = {

@@ -34,7 +34,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
         final data = jsonDecode(item.payload);
 
         switch (item.operation) {
-          case SyncOperation.CREATE_COMPANY: // 💡 NUEVO
+          case SyncOperation.CREATE_COMPANY:
             final newCompany = await _apiService.createCompany(data);
             if (item.localId != null) {
               await _isarService.updateLocalCompanyWithRealId(
@@ -44,11 +44,11 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
             }
             break;
 
-          case SyncOperation.UPDATE_COMPANY: // 💡 NUEVO
+          case SyncOperation.UPDATE_COMPANY:
             await _apiService.updateCompany(targetId, data);
             break;
 
-          case SyncOperation.DELETE_COMPANY: // 💡 NUEVO
+          case SyncOperation.DELETE_COMPANY:
             await _apiService.deleteCompany(targetId);
             await _isarService.deleteCompany(
               targetId,
@@ -162,7 +162,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     Company tempCompany,
   ) async {
     final syncItem = SyncQueueItem.create(
-      operation: SyncOperation.CREATE_COMPANY, // 💡 NUEVO
+      operation: SyncOperation.CREATE_COMPANY,
       endpoint: '/api/v1/platform/companies',
       payload: jsonEncode(data.toJson()),
       localId: data.localId!,
@@ -205,17 +205,11 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
           await _isarService.saveCompanies([updatedCompany]);
         } catch (e) {
           // FALLBACK OFFLINE
-          await _handleOfflineUpdate(
-            data,
-            companyToSave,
-          ); // Se pasa como argumento
+          await _handleOfflineUpdate(data, companyToSave);
         }
       } else {
         // OFFLINE DIRECTO
-        await _handleOfflineUpdate(
-          data,
-          companyToSave,
-        ); // Se pasa como argumento
+        await _handleOfflineUpdate(data, companyToSave);
       }
     } catch (e) {
       state = previousState;
@@ -229,20 +223,16 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
 
   Future<void> _handleOfflineUpdate(
     CompanyUpdateLocal data,
-    Company companyToSave, // 💡 DEFINICIÓN COMO PARÁMETRO
+    Company companyToSave,
   ) async {
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.UPDATE_COMPANY,
       endpoint: '/api/v1/platform/companies/${data.id}',
-      payload: jsonEncode(
-        data.toApiJson(),
-      ), // toApiJson() es el que tiene los datos cambiados
+      payload: jsonEncode(data.toApiJson()),
       localId: data.id,
     );
     await _isarService.enqueueSyncItem(syncItem);
-    await _isarService.saveCompanies([
-      companyToSave,
-    ]); // Usamos companyToSave aquí
+    await _isarService.saveCompanies([companyToSave]);
     print('DEBUG OFFLINE: Compañía actualizada y encolada.');
   }
 
@@ -289,7 +279,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     await _isarService.saveCompanies([companyMarkedForDeletion]);
 
     final syncItem = SyncQueueItem.create(
-      operation: SyncOperation.DELETE_COMPANY, // 💡 NUEVO
+      operation: SyncOperation.DELETE_COMPANY,
       endpoint: '/api/v1/platform/companies/$companyId',
       payload: '{}',
     );
