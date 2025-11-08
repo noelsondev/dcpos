@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/companies_provider.dart';
 import 'company_form_screen.dart';
-import 'branches_screen.dart'; // 💡 CORREGIDO: Importación de BranchesScreen
+import 'branches_screen.dart'; // 💡 Importación necesaria
 
 class CompaniesScreen extends ConsumerWidget {
   const CompaniesScreen({super.key});
@@ -14,7 +14,6 @@ class CompaniesScreen extends ConsumerWidget {
   void _reloadCompanies(WidgetRef ref) {
     // 🚀 Llamada para invalidar y reconstruir el AsyncNotifier
     ref.invalidate(companiesProvider);
-    // Opcional: ref.read(companiesProvider.notifier).build();
   }
 
   @override
@@ -33,7 +32,7 @@ class CompaniesScreen extends ConsumerWidget {
           ),
         ],
       ),
-      // --- Botón Flotante para Crear ---
+      // El botón FAB solo debe aparecer si la lógica del Notifier/API permite crear (Global Admin)
       floatingActionButton: FloatingActionButton(
         onPressed: () {
           Navigator.of(context).push(
@@ -46,13 +45,17 @@ class CompaniesScreen extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (err, stack) => Center(
           child: Text(
+            // Muestra el error de forma limpia
             'Error al cargar: ${err.toString().replaceAll('Exception: ', '')}',
             style: const TextStyle(color: Colors.red),
           ),
         ),
         data: (companies) {
           if (companies.isEmpty) {
-            return const Center(child: Text('Aún no hay compañías creadas.'));
+            // Mensaje más contextualizado si no hay compañías
+            return const Center(
+              child: Text('No hay compañías disponibles para su perfil.'),
+            );
           }
 
           // --- Listado de Compañías ---
@@ -66,7 +69,7 @@ class CompaniesScreen extends ConsumerWidget {
                 title: Text(company.name),
                 subtitle: Text('Slug: ${company.slug}'),
                 onTap: () {
-                  // ✅ CORREGIDO: Navegar a BranchesScreen, pasando el company.id
+                  // Navegar a BranchesScreen
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (context) =>
@@ -93,9 +96,13 @@ class CompaniesScreen extends ConsumerWidget {
                     IconButton(
                       icon: const Icon(Icons.delete, color: Colors.red),
                       onPressed: () {
-                        ref
-                            .read(companiesProvider.notifier)
-                            .deleteCompany(company.id);
+                        // Mostrar confirmación antes de eliminar
+                        _showDeleteConfirmation(
+                          context,
+                          ref,
+                          company.id,
+                          company.name,
+                        );
                       },
                     ),
                   ],
@@ -104,6 +111,54 @@ class CompaniesScreen extends ConsumerWidget {
             },
           );
         },
+      ),
+    );
+  }
+
+  // Función de utilidad para mostrar diálogo de confirmación (Mejora UX)
+  void _showDeleteConfirmation(
+    BuildContext context,
+    WidgetRef ref,
+    String companyId,
+    String companyName,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirmar Eliminación'),
+        content: Text(
+          '¿Está seguro de que desea eliminar la compañía "$companyName"? Esta acción es irreversible y eliminará todos sus datos asociados (sucursales, usuarios, etc.).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop(); // Cerrar diálogo
+            },
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop(); // Cerrar diálogo
+
+              try {
+                await ref
+                    .read(companiesProvider.notifier)
+                    .deleteCompany(companyId);
+              } catch (e) {
+                // Mostrar un error si la eliminación falla (ej: error de permisos)
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Fallo al eliminar: ${e.toString().replaceAll('Exception: ', '')}',
+                    ),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }

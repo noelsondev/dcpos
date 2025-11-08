@@ -10,6 +10,8 @@ import '../services/connectivity_service.dart';
 import '../providers/auth_provider.dart';
 import '../models/user.dart';
 
+// Definiciones de tipos (asumimos que CompanyCreateLocal y CompanyUpdateLocal existen)
+
 class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   ApiService get _apiService => ref.read(apiServiceProvider);
   IsarService get _isarService => ref.read(isarServiceProvider);
@@ -20,18 +22,28 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   User? get _currentUser => ref.read(authProvider.notifier).user;
 
   // ----------------------------------------------------------------------
-  // AYUDA: Verifica si el usuario tiene el rol 'global_admin'
+  // 🎯 LÓGICA DE PERMISOS
   // ----------------------------------------------------------------------
+
+  // 1. Verifica si el usuario tiene el rol 'global_admin' (Uso para Fetch/UI)
   bool _isGlobalAdmin() {
     final user = _currentUser;
     if (user == null) return false;
 
-    // ✅ Usamos roleName directamente para la verificación
     return user.roleName == 'global_admin';
   }
 
+  // 2. ✅ NUEVA LÓGICA: Verifica si el usuario tiene rol 'admin' (Global o Company) para CREAR/ELIMINAR
+  bool _canPerformAdminAction() {
+    final user = _currentUser;
+    if (user == null) return false;
+
+    // Asume que la creación requiere cualquier rol que contenga 'admin'
+    return user.roleName.contains('admin');
+  }
+
   // ----------------------------------------------------------------------
-  // LÓGICA DE SINCRONIZACIÓN Y COLA
+  // LÓGICA DE SINCRONIZACIÓN Y COLA (MANEJO DE ERRORES PERMANENTES)
   // ----------------------------------------------------------------------
 
   Future<void> _processSyncQueue() async {
@@ -43,6 +55,10 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
       try {
         final targetId = item!.endpoint.split('/').last;
         final data = jsonDecode(item.payload);
+
+        if (!item!.operation.name.contains('COMPANY')) {
+          // Se mantiene la lógica de asumir que otro Notifier maneja esto.
+        }
 
         switch (item.operation) {
           case SyncOperation.CREATE_COMPANY:
@@ -61,22 +77,38 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
 
           case SyncOperation.DELETE_COMPANY:
             await _apiService.deleteCompany(targetId);
-            // 💡 USAR EL MÉTODO DE CASCADA DESPUÉS DE LA ELIMINACIÓN REMOTA
             await _isarService.deleteCompanyAndCascade(targetId);
             break;
 
           default:
             print(
-              'DEBUG SYNC: Operación no manejada por CompaniesNotifier: ${item.operation.name}',
+              'DEBUG SYNC: Operación no manejada por CompaniesNotifier: ${item.operation.name}. Dejando en cola.',
             );
-            await _isarService.enqueueSyncItem(item);
             return;
         }
+        // Si la operación fue exitosa
         await _isarService.dequeueSyncItem(item.id);
       } catch (e) {
         print(
           'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
         );
+
+        final errorMessage = e.toString().toLowerCase();
+
+        // 🎯 Lógica para detectar errores permanentes y DESCARTAR el item
+        if (errorMessage.contains('acceso denegado') ||
+            errorMessage.contains('403') ||
+            errorMessage.contains('not found') ||
+            errorMessage.contains('404')) {
+          print(
+            'DEBUG SYNC: Descartando item ${item.operation.name} por error permanente (Permiso/4xx).',
+          );
+          await _isarService.dequeueSyncItem(item.id);
+          // Continua el bucle para procesar el siguiente elemento
+          continue;
+        }
+
+        // Si es cualquier otro error (ej. red, servidor caído 5xx), rompemos el bucle
         break;
       }
     }
@@ -93,7 +125,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
         .toList();
 
     for (final id in staleIds) {
-      // 💡 USAR EL MÉTODO DE CASCADA PARA LA LIMPIEZA
       await _isarService.deleteCompanyAndCascade(id);
     }
     await _isarService.saveCompanies(onlineCompanies);
@@ -105,6 +136,11 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
 
   @override
   Future<List<Company>> build() async {
+    final user = _currentUser;
+    if (user == null) {
+      return [];
+    }
+
     final localCompanies = await _isarService.getAllCompanies();
 
     if (localCompanies.isNotEmpty) {
@@ -112,19 +148,35 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }
 
     try {
-      // 💡 CAMBIO CLAVE: Esperar a que TODAS las operaciones pendientes (incluyendo DELETE) se ejecuten en el servidor.
+      // 1. Procesar cola de sincronización
       await _processSyncQueue();
 
-      // 2. Ahora que el servidor está actualizado, traemos los datos frescos.
-      final onlineCompanies = await _apiService.fetchCompanies();
+      // 2. Determinar la lista de compañías a obtener
+      List<Company> onlineCompanies = [];
 
-      // 3. Sincronizamos localmente, eliminando las obsoletas (las que acabamos de borrar).
+      // Utilizamos la verificación estricta de Global Admin para la lógica de FETCH
+      final bool isGlobalAdmin = _isGlobalAdmin();
+      final String? userCompanyId = user.companyId;
+
+      if (isGlobalAdmin) {
+        onlineCompanies = await _apiService.fetchCompanies();
+      } else if (userCompanyId != null) {
+        onlineCompanies = await _apiService.fetchCompanies(
+          companyId: userCompanyId,
+        );
+      } else {
+        return [];
+      }
+
+      // 3. Sincronizar y devolver
       await _syncLocalDatabase(onlineCompanies);
       return onlineCompanies;
     } catch (e) {
-      if (localCompanies.isNotEmpty) return localCompanies;
+      if (localCompanies.isNotEmpty) {
+        return localCompanies;
+      }
       throw Exception(
-        'Fallo al cargar compañías online y no hay datos offline: $e',
+        'Fallo al cargar compañías online y no hay datos offline: ${e.toString()}',
       );
     }
   }
@@ -134,12 +186,14 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   // ----------------------------------------------------------------------
 
   Future<void> createCompany(CompanyCreateLocal data) async {
-    // 💡 1. VERIFICACIÓN DE PERMISOS: Bloquear el encolado y la actualización optimista.
-    if (!_isGlobalAdmin()) {
+    // 1. 🛑 VERIFICACIÓN DE PERMISOS: Bloquea localmente a Cashier/Accountant si no son Admin.
+    if (!_canPerformAdminAction()) {
       print(
-        'ERROR PERMISOS: Intento de CREATE_COMPANY denegado localmente (No Global Admin).',
+        'ERROR PERMISOS: Intento de CREATE_COMPANY denegado localmente (Rol insuficiente).',
       );
-      throw Exception("Acceso denegado. Se requiere rol 'global_admin'.");
+      throw Exception(
+        "Acceso denegado. Se requiere rol 'admin' (Global o Company).",
+      );
     }
 
     final previousState = state;
@@ -168,12 +222,14 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
         } catch (e) {
           // FALLBACK OFFLINE: Si la llamada API falla
           await _handleOfflineCreate(data, tempCompany);
+          rethrow;
         }
       } else {
         // OFFLINE DIRECTO
         await _handleOfflineCreate(data, tempCompany);
       }
     } catch (e) {
+      // Revertir el estado de Riverpod si hay fallo después de la actualización optimista
       state = previousState;
       throw Exception('Fallo al crear compañía: ${e.toString()}');
     }
@@ -223,6 +279,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
           await _isarService.saveCompanies([updatedCompany]);
         } catch (e) {
           await _handleOfflineUpdate(data, companyToSave);
+          rethrow;
         }
       } else {
         await _handleOfflineUpdate(data, companyToSave);
@@ -249,21 +306,20 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   }
 
   Future<void> deleteCompany(String companyId) async {
-    // 1. Verificar Permisos (aunque esto debería hacerse en la UI)
-    if (!_isGlobalAdmin()) {
+    // 1. 🛑 Verificar Permisos: Bloquea localmente.
+    if (!_canPerformAdminAction()) {
       print(
-        'ERROR PERMISOS: Intento de DELETE_COMPANY denegado localmente (No Global Admin).',
+        'ERROR PERMISOS: Intento de DELETE_COMPANY denegado localmente (Rol insuficiente).',
       );
-      throw Exception("Acceso denegado. Se requiere rol 'global_admin'.");
+      throw Exception(
+        "Acceso denegado. Se requiere rol 'admin' (Global o Company).",
+      );
     }
 
     final previousState = state;
     if (!state.hasValue) return;
 
     // 2. Actualización optimista del estado de Riverpod
-    final companyToDelete = previousState.value!.firstWhere(
-      (c) => c.id == companyId,
-    );
     final updatedList = previousState.value!
         .where((c) => c.id != companyId)
         .toList();
@@ -279,15 +335,12 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
           await _isarService.deleteCompanyAndCascade(companyId);
         } catch (e) {
           // FALLBACK OFFLINE: Si la llamada API falla
-          await _handleOfflineDelete(
-            companyId,
-          ); // Eliminamos el parámetro companyToDelete
+          await _handleOfflineDelete(companyId);
+          rethrow;
         }
       } else {
         // OFFLINE DIRECTO
-        await _handleOfflineDelete(
-          companyId,
-        ); // Eliminamos el parámetro companyToDelete
+        await _handleOfflineDelete(companyId);
       }
     } catch (e) {
       // Revertir el estado de Riverpod si hay fallo
@@ -296,13 +349,9 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }
   }
 
-  // 🎯 LÓGICA CORREGIDA: Eliminar localmente y encolar
+  // LÓGICA CORREGIDA: Eliminar localmente y encolar
   Future<void> _handleOfflineDelete(String companyId) async {
     // 1. Eliminar la compañía localmente
-    // 💡 ¡CRUCIAL! Esto asegura que la compañía no se cargue más en la UI.
-    // NOTA: Usamos el método de cascada. Esto es un riesgo potencial si el usuario
-    // borra offline y luego se conecta, pero garantiza consistencia de la UI.
-    // El backend debe manejar la eliminación en cascada de los hijos al sincronizar.
     await _isarService.deleteCompanyAndCascade(companyId);
 
     // 2. Encolar la operación de eliminación

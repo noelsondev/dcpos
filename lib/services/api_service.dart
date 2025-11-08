@@ -14,7 +14,7 @@ final apiUrlProvider = Provider<String>(
 );
 
 // ---------------------------------------------
-// INTERCEPTOR PARA AUTH Y REFRESH (COMPLETO)
+// INTERCEPTOR PARA AUTH Y REFRESH (OMITIDO POR BREVEDAD)
 // ---------------------------------------------
 
 class AuthInterceptor extends Interceptor {
@@ -24,6 +24,7 @@ class AuthInterceptor extends Interceptor {
 
   AuthInterceptor(this._ref, this.apiService);
 
+  // ... (onRequest y onError permanecen iguales) ...
   // Sobreescribe el método onRequest para adjuntar el Access Token
   @override
   void onRequest(
@@ -106,7 +107,7 @@ class ApiService {
     dio.options.baseUrl = _apiUrl;
   }
 
-  // --- Auth Endpoints ---
+  // --- Auth Endpoints (OMITIDO POR BREVEDAD) ---
   Future<Token> login(String username, String password) async {
     try {
       final response = await dio.post(
@@ -152,7 +153,7 @@ class ApiService {
     }
   }
 
-  // --- Role Endpoints ---
+  // --- Role Endpoints (OMITIDO POR BREVEDAD) ---
   Future<List<Role>> fetchAllRoles() async {
     try {
       final response = await dio.get('/roles/');
@@ -168,7 +169,7 @@ class ApiService {
     }
   }
 
-  // --- User Endpoints ---
+  // --- User Endpoints (OMITIDO POR BREVEDAD) ---
   Future<List<User>> fetchAllUsers() async {
     try {
       final response = await dio.get('/users/');
@@ -222,13 +223,29 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA COMPANY
+  // 💡 MÉTODOS PARA COMPANY (FILTRADO IMPLEMENTADO)
   // ----------------------------------------------------------------------
-  Future<List<Company>> fetchCompanies() async {
+  Future<List<Company>> fetchCompanies({String? companyId}) async {
     try {
-      final response = await dio.get('/platform/companies');
+      final String endpoint;
 
-      // Se asume que la respuesta es DIRECTAMENTE una List<dynamic>.
+      // 🎯 Lógica de filtrado:
+      if (companyId != null) {
+        // Si se proporciona un ID, trae SOLO esa compañía
+        endpoint = '/platform/companies/$companyId';
+      } else {
+        // Si no se proporciona ID (Global Admin), trae todas
+        endpoint = '/platform/companies';
+      }
+
+      final response = await dio.get(endpoint);
+
+      if (companyId != null && response.data is Map<String, dynamic>) {
+        // Si pedimos una sola compañía, la API devuelve un objeto, no una lista.
+        return [Company.fromJson(response.data)];
+      }
+
+      // Si la respuesta es una lista (para el endpoint sin companyId o si la API devuelve una lista para un solo ID)
       final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
 
       return jsonList.map((json) => Company.fromJson(json)).toList();
@@ -283,7 +300,7 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA BRANCH (NUEVOS y CORREGIDO fetchBranches)
+  // 💡 MÉTODOS PARA BRANCH (OMITIDO POR BREVEDAD)
   // ----------------------------------------------------------------------
   Future<List<Branch>> fetchBranches(String companyId) async {
     try {
