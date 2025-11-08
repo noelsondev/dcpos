@@ -5,14 +5,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 // 🚨 Asegúrate de que estas rutas coincidan con tu proyecto
-import '../models/user.dart';
+import '../models/user.dart'; // Contiene UserCreateLocal, UserUpdateLocal
 import '../models/role.dart';
-import '../models/company.dart'; // 💡 IMPORTACIÓN AÑADIDA
-import '../models/branch.dart'; // 💡 IMPORTACIÓN AÑADIDA
+import '../models/company.dart';
+import '../models/branch.dart';
 import '../providers/users_provider.dart';
 import '../providers/roles_provider.dart';
-import '../providers/companies_provider.dart'; // 💡 IMPORTACIÓN AÑADIDA
-import '../providers/branches_provider.dart'; // 💡 IMPORTACIÓN AÑADIDA
+import '../providers/companies_provider.dart';
+import '../providers/branches_provider.dart';
+import '../providers/auth_provider.dart';
 
 // Proveedor para generar IDs (usamos Riverpod para consistency)
 final uuidProvider = Provider((ref) => const Uuid());
@@ -40,7 +41,12 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
   String? _selectedCompanyId;
   String? _selectedBranchId;
 
-  bool _isLoading = false; // 💡 AÑADIDO estado de carga
+  bool _isLoading = false;
+
+  // VARIABLE DE ESTADO PARA EL ERROR DE VALIDACIÓN DE COMPAÑÍA
+  String? _companyIdValidationError;
+  // VARIABLE DE ESTADO PARA EL ERROR DE SUCURSAL
+  String? _branchIdValidationError;
 
   @override
   void initState() {
@@ -65,11 +71,33 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
     super.dispose();
   }
 
+  // Función auxiliar para determinar si un rol requiere compañía
+  bool _roleRequiresCompany(String? roleName) {
+    if (roleName == null) return false;
+    return roleName == 'company_admin' ||
+        roleName == 'cashier' ||
+        roleName == 'accountant';
+  }
+
+  // Función auxiliar para determinar si un rol requiere sucursal
+  bool _roleRequiresBranch(String? roleName) {
+    if (roleName == null) return false;
+    return roleName == 'cashier' || roleName == 'accountant';
+  }
+
   // -----------------------------------------------------------
   // FUNCIÓN PRINCIPAL DE ENVÍO Y LÓGICA CONDICIONAL DE IDs
   // -----------------------------------------------------------
   void _submitForm() async {
-    if (!_formKey.currentState!.validate()) return;
+    // 1. Validaciones de formulario (nativas)
+    if (!_formKey.currentState!.validate()) {
+      setState(() {
+        _isLoading = false;
+        _companyIdValidationError = null;
+        _branchIdValidationError = null;
+      });
+      return;
+    }
     if (_selectedRoleId == null || _selectedRoleName == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Por favor, selecciona un rol.')),
@@ -77,17 +105,87 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      // Limpiar errores personalizados antes de la validación
+      _companyIdValidationError = null;
+      _branchIdValidationError = null;
+    });
+
+    // OBTENER EL USUARIO ACTUAL
+    final currentUserAsync = ref.read(authProvider);
+    final currentUser = currentUserAsync.value;
+
+    if (currentUser == null) {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Error de autenticación: No se pudo obtener el usuario actual.',
+          ),
+        ),
+      );
+      return;
+    }
 
     final usersNotifier = ref.read(usersProvider.notifier);
 
-    // 💡 1. Lógica de Asignación de IDs Condicionales
+    final bool isCurrentUserCompanyAdmin =
+        currentUser.roleName == 'company_admin';
+    final bool isCompanyRequired = _roleRequiresCompany(_selectedRoleName);
+    final bool isBranchRequired = _roleRequiresBranch(_selectedRoleName);
+
+    // Lógica de Asignación de IDs Condicionales (Base de la validación)
     String? finalCompanyId = _selectedCompanyId;
     String? finalBranchId = _selectedBranchId;
 
+    // ------------------------------------------------------
+    // 🚨 VALIDACIÓN LOCAL PARA COMPANY_ADMIN (y otros roles requeridos)
+    // ------------------------------------------------------
+    if (isCompanyRequired) {
+      // Si el usuario logueado es Company Admin
+      if (isCurrentUserCompanyAdmin) {
+        // 1. Validación de Compañía (Si intenta asignar una que NO es la suya)
+        if (finalCompanyId != null && finalCompanyId != currentUser.companyId) {
+          setState(() {
+            _companyIdValidationError =
+                'Acceso Denegado: Solo puedes asignar usuarios a tu propia compañía.';
+            _isLoading = false;
+          });
+          return;
+        }
+
+        // Forzamos su Company ID para la operación
+        finalCompanyId = currentUser.companyId;
+      } else {
+        // Si el usuario logueado NO es Company Admin (Global Admin)
+
+        if (finalCompanyId == null) {
+          setState(() {
+            _companyIdValidationError =
+                'La compañía es requerida para este rol.';
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+
+      // 2. VALIDACIÓN MANUAL PARA SUCURSAL SI ES CAJERO O CONTADOR
+      if (isBranchRequired) {
+        if (finalBranchId == null || finalBranchId.isEmpty) {
+          setState(() {
+            _branchIdValidationError =
+                'La sucursal es requerida para el rol ${_selectedRoleName?.toUpperCase()}.';
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+    }
+    // ------------------------------------------------------
+
     // A. Roles que NO requieren compañía/sucursal (limpiar IDs)
-    if (_selectedRoleName != 'company_admin' &&
-        _selectedRoleName != 'cashier') {
+    if (!isCompanyRequired) {
       finalCompanyId = null;
       finalBranchId = null;
     }
@@ -95,7 +193,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
     else if (_selectedRoleName == 'company_admin') {
       finalBranchId = null;
     }
-    // C. Rol 'cashier' requiere ambos (finalCompanyId y finalBranchId se mantienen y fueron validados por los Dropdowns)
+    // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
 
     try {
       if (widget.userToEdit == null) {
@@ -108,7 +206,6 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           roleId: _selectedRoleId!,
           roleName: _selectedRoleName!,
           localId: newUserId,
-          // 💡 Aplicar IDs condicionales
           companyId: finalCompanyId,
           branchId: finalBranchId,
           isActive: true,
@@ -125,7 +222,6 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
               : null,
           roleId: _selectedRoleId,
           roleName: _selectedRoleName,
-          // 💡 Aplicar IDs condicionales
           companyId: finalCompanyId,
           branchId: finalBranchId,
         );
@@ -135,6 +231,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
+      // Manejo de Errores de API/Riverpod (genéricos)
       if (mounted) {
         final errorMessage = e.toString().replaceAll('Exception: ', '');
         ScaffoldMessenger.of(context).showSnackBar(
@@ -206,6 +303,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
             });
           },
           validator: (value) {
+            // Este validador nativo se mantiene como fallback para Global Admin
             if (value == null || value.isEmpty) {
               return 'Debes seleccionar una sucursal.';
             }
@@ -223,14 +321,23 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
   Widget build(BuildContext context) {
     // Observar los proveedores de datos
     final rolesAsyncValue = ref.watch(rolesProvider);
-    final companiesAsyncValue = ref.watch(companiesProvider); // 💡 Observado
-    final branchesAsyncValue = ref.watch(branchesProvider); // 💡 Observado
+    final companiesAsyncValue = ref.watch(companiesProvider);
+    final branchesAsyncValue = ref.watch(branchesProvider);
+
+    // OBTENER EL USUARIO ACTUAL
+    final currentUserAsync = ref.watch(authProvider);
+    final currentUser = currentUserAsync.value;
+
+    final bool isCurrentUserCompanyAdmin =
+        currentUser?.roleName == 'company_admin' ?? false;
 
     // Lógica de Visibilidad Condicional
-    final bool isCompanyRequired =
-        _selectedRoleName == 'company_admin' || _selectedRoleName == 'cashier';
+    final bool isCompanyRequired = _roleRequiresCompany(_selectedRoleName);
+    final bool isBranchRequired = _roleRequiresBranch(_selectedRoleName);
 
-    final bool isBranchRequired = _selectedRoleName == 'cashier';
+    // Solo mostrar el selector de compañía si el usuario no es Company Admin
+    final bool showCompanyDropdown =
+        isCompanyRequired && !isCurrentUserCompanyAdmin;
 
     return Scaffold(
       appBar: AppBar(
@@ -325,15 +432,22 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                           _selectedRoleId = newRoleId;
                           _selectedRoleName = selectedRole.name;
 
-                          // Lógica para limpiar Company/Branch si el nuevo rol no los requiere
                           final bool newRoleRequiresCompany =
-                              _selectedRoleName == 'company_admin' ||
-                              _selectedRoleName == 'cashier';
+                              _roleRequiresCompany(_selectedRoleName);
 
                           if (!newRoleRequiresCompany) {
                             _selectedCompanyId = null;
                             _selectedBranchId = null;
+                          } else if (isCurrentUserCompanyAdmin) {
+                            // Si es Company Admin y el rol lo requiere, precarga su ID
+                            _selectedCompanyId = currentUser!.companyId;
+                          } else if (widget.userToEdit == null) {
+                            // Si es Global Admin creando uno nuevo, limpia la selección de compañía
+                            _selectedCompanyId = null;
                           }
+
+                          _companyIdValidationError = null;
+                          _branchIdValidationError = null;
                         });
                       }
                     },
@@ -348,33 +462,89 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
               ),
 
               // ------------------------------------------
-              // 💡 CAMPOS DE COMPAÑÍA Y SUCURSAL (CONDICIONALES)
+              // CAMPOS DE COMPAÑÍA Y SUCURSAL (CONDICIONALES)
               // ------------------------------------------
               if (isCompanyRequired)
                 Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 20),
-                    companiesAsyncValue.when(
-                      loading: () =>
-                          const Center(child: LinearProgressIndicator()),
-                      error: (err, stack) => Text(
-                        '❌ Error al cargar compañías: ${err.toString().replaceAll('Exception: ', '')}',
-                        style: const TextStyle(color: Colors.red),
-                      ),
-                      data: (companies) {
-                        if (companies.isEmpty) {
-                          return const Center(
-                            child: Text('⚠️ No hay compañías disponibles.'),
+                    // 1. Dropdown/Info de Compañía
+                    if (showCompanyDropdown) // Global Admin ve esto (Dropdown)
+                      companiesAsyncValue.when(
+                        loading: () =>
+                            const Center(child: LinearProgressIndicator()),
+                        error: (err, stack) => Text(
+                          '❌ Error al cargar compañías: ${err.toString().replaceAll('Exception: ', '')}',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                        data: (companies) {
+                          if (companies.isEmpty) {
+                            return const Center(
+                              child: Text('⚠️ No hay compañías disponibles.'),
+                            );
+                          }
+
+                          // Dropdown de Compañía para Global Admin
+                          return _buildCompanyDropdown(companies);
+                        },
+                      )
+                    else
+                    // Company Admin ve esto (Campo de solo lectura)
+                    if (isCurrentUserCompanyAdmin && isCompanyRequired)
+                      companiesAsyncValue.when(
+                        loading: () =>
+                            const Center(child: LinearProgressIndicator()),
+                        error: (err, stack) => Text(
+                          '❌ Error al cargar su compañía: ${err.toString().replaceAll('Exception: ', '')}',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                        data: (companies) {
+                          final String? currentCompanyId =
+                              currentUser?.companyId;
+
+                          // Buscar la compañía por ID. Usamos cast<Company?>() y orElse para seguridad.
+                          final Company? userCompany = companies
+                              .cast<Company?>()
+                              .firstWhere(
+                                (c) => c?.id == currentCompanyId,
+                                orElse: () => null,
+                              );
+
+                          final String companyName =
+                              userCompany?.name ?? 'Compañía No Encontrada';
+
+                          // Mostrar el campo de solo lectura
+                          return TextFormField(
+                            initialValue: companyName,
+                            readOnly: true,
+                            enabled: false, // Deshabilitado para evitar cambios
+                            decoration: const InputDecoration(
+                              labelText: 'Compañía (Asignada)',
+                              border: OutlineInputBorder(),
+                            ),
+                            style: const TextStyle(
+                              color: Colors.black54,
+                            ), // Estilo para indicar solo lectura
                           );
-                        }
+                        },
+                      ),
 
-                        // 1. Dropdown de Compañía
-                        return _buildCompanyDropdown(companies);
-                      },
-                    ),
+                    // Mostrar error de validación manual de la compañía
+                    if (_companyIdValidationError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          '⚠️ ${_companyIdValidationError!}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
 
-                    // 2. Dropdown de Sucursal (Solo para 'cashier' y si ya seleccionó compañía)
-                    if (isBranchRequired && _selectedCompanyId != null)
+                    // 2. Dropdown de Sucursal (Solo para 'cashier' y 'accountant')
+                    if (isBranchRequired)
                       branchesAsyncValue.when(
                         loading: () => const Padding(
                           padding: EdgeInsets.only(top: 20.0),
@@ -385,9 +555,24 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                           style: const TextStyle(color: Colors.red),
                         ),
                         data: (allBranches) {
+                          final companyIdToFilter = showCompanyDropdown
+                              ? _selectedCompanyId
+                              : currentUser?.companyId;
+
+                          if (companyIdToFilter == null) {
+                            // Muestra un mensaje si el ID de compañía es nulo (Global Admin debe seleccionar uno)
+                            return const Padding(
+                              padding: EdgeInsets.only(top: 20.0),
+                              child: Text(
+                                '⚠️ Selecciona primero una compañía.',
+                                style: TextStyle(color: Colors.orange),
+                              ),
+                            );
+                          }
+
                           // Filtrar sucursales por la compañía seleccionada
                           final availableBranches = allBranches
-                              .where((b) => b.companyId == _selectedCompanyId)
+                              .where((b) => b.companyId == companyIdToFilter)
                               .toList();
 
                           if (availableBranches.isEmpty) {
@@ -402,6 +587,19 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
                           return _buildBranchDropdown(availableBranches);
                         },
+                      ),
+
+                    // Mostrar error de validación manual de la Sucursal
+                    if (_branchIdValidationError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          '⚠️ ${_branchIdValidationError!}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                            fontSize: 13,
+                          ),
+                        ),
                       ),
                   ],
                 ),

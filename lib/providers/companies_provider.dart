@@ -7,17 +7,28 @@ import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
-
-// Definición de proveedores de servicio (asumida)
-// final apiServiceProvider = Provider((ref) => ApiService());
-// final isarServiceProvider = Provider((ref) => IsarService());
-// final connectivityServiceProvider = Provider((ref) => ConnectivityService());
+import '../providers/auth_provider.dart';
+import '../models/user.dart';
 
 class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   ApiService get _apiService => ref.read(apiServiceProvider);
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
+
+  // 💡 Accede al User? a través del getter 'user' del AuthNotifier
+  User? get _currentUser => ref.read(authProvider.notifier).user;
+
+  // ----------------------------------------------------------------------
+  // AYUDA: Verifica si el usuario tiene el rol 'global_admin'
+  // ----------------------------------------------------------------------
+  bool _isGlobalAdmin() {
+    final user = _currentUser;
+    if (user == null) return false;
+
+    // ✅ CORRECCIÓN SOLICITADA: Usamos roleName directamente
+    return user.roleName == 'global_admin';
+  }
 
   // ----------------------------------------------------------------------
   // LÓGICA DE SINCRONIZACIÓN Y COLA
@@ -50,17 +61,13 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
 
           case SyncOperation.DELETE_COMPANY:
             await _apiService.deleteCompany(targetId);
-            await _isarService.deleteCompany(
-              targetId,
-            ); // Limpieza final de local DB
+            await _isarService.deleteCompany(targetId);
             break;
 
-          // Omitir operaciones de Users y Branches
           default:
             print(
               'DEBUG SYNC: Operación no manejada por CompaniesNotifier: ${item.operation.name}',
             );
-            // Si no es una operación de Company, la volvemos a encolar y salimos
             await _isarService.enqueueSyncItem(item);
             return;
         }
@@ -78,7 +85,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     final localCompanies = await _isarService.getAllCompanies();
     final Set<String> onlineIds = onlineCompanies.map((c) => c.id).toSet();
 
-    // Limpieza de compañías obsoletas
     final List<String> staleIds = localCompanies
         .where((local) => !onlineIds.contains(local.id))
         .map((local) => local.id)
@@ -102,7 +108,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }
 
     try {
-      await _processSyncQueue(); // 🛑 Sincronizar cambios locales antes de obtener
+      await _processSyncQueue();
       final onlineCompanies = await _apiService.fetchCompanies();
       await _syncLocalDatabase(onlineCompanies);
       return onlineCompanies;
@@ -119,10 +125,18 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   // ----------------------------------------------------------------------
 
   Future<void> createCompany(CompanyCreateLocal data) async {
+    // 💡 1. VERIFICACIÓN DE PERMISOS: Bloquear el encolado y la actualización optimista.
+    if (!_isGlobalAdmin()) {
+      print(
+        'ERROR PERMISOS: Intento de CREATE_COMPANY denegado localmente (No Global Admin).',
+      );
+      throw Exception("Acceso denegado. Se requiere rol 'global_admin'.");
+    }
+
     final previousState = state;
     if (!state.hasValue) return;
 
-    // 1. Actualización optimista temporal
+    // 2. Actualización optimista temporal (solo si pasó la verificación)
     final tempCompany = Company(
       id: data.localId!,
       name: data.name,
@@ -138,7 +152,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
           final newCompany = await _apiService.createCompany(data.toJson());
           await _isarService.saveCompanies([newCompany]);
 
-          // Reemplazar la temporal con la real en el estado de Riverpod
           final updatedList = previousState.value!
               .where((c) => c.id != data.localId)
               .toList();
@@ -172,12 +185,14 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     print('DEBUG OFFLINE: Compañía creada y encolada.');
   }
 
+  // ... el resto de la clase updateCompany y deleteCompany es igual ...
+
   Future<void> updateCompany(CompanyUpdateLocal data) async {
     final previousState = state;
     if (!state.hasValue) return;
+
     final currentList = previousState.value!;
 
-    // 1. Actualización optimista local (Crea la versión optimista)
     final updatedList = currentList.map((company) {
       return company.id == data.id
           ? company.copyWith(
@@ -188,27 +203,21 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }).toList();
 
     state = AsyncValue.data(updatedList);
-
-    // 💡 DEFINICIÓN CRUCIAL: Aquí se define 'companyToSave'
     final companyToSave = updatedList.firstWhere((c) => c.id == data.id);
 
     try {
       final isConnected = await _connectivityService.checkConnection();
       if (isConnected) {
         try {
-          // ONLINE
-          // Usamos toApiJson() para enviar solo los campos modificados
           final updatedCompany = await _apiService.updateCompany(
             data.id,
             data.toApiJson(),
           );
           await _isarService.saveCompanies([updatedCompany]);
         } catch (e) {
-          // FALLBACK OFFLINE
           await _handleOfflineUpdate(data, companyToSave);
         }
       } else {
-        // OFFLINE DIRECTO
         await _handleOfflineUpdate(data, companyToSave);
       }
     } catch (e) {
@@ -216,10 +225,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
       throw Exception('Fallo al actualizar compañía: ${e.toString()}');
     }
   }
-
-  // ----------------------------------------------------------------------
-  // FUNCIÓN AUXILIAR DE MANEJO OFFLINE
-  // ----------------------------------------------------------------------
 
   Future<void> _handleOfflineUpdate(
     CompanyUpdateLocal data,
@@ -240,7 +245,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     final previousState = state;
     if (!state.hasValue) return;
 
-    // 1. Optimistic Update: Eliminar del estado de Riverpod
     final companyToDelete = previousState.value!.firstWhere(
       (c) => c.id == companyId,
     );
@@ -253,15 +257,12 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
       final isConnected = await _connectivityService.checkConnection();
       if (isConnected) {
         try {
-          // ONLINE
           await _apiService.deleteCompany(companyId);
           await _isarService.deleteCompany(companyId);
         } catch (e) {
-          // FALLBACK OFFLINE
           await _handleOfflineDelete(companyId, companyToDelete);
         }
       } else {
-        // OFFLINE DIRECTO
         await _handleOfflineDelete(companyId, companyToDelete);
       }
     } catch (e) {
@@ -274,7 +275,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     String companyId,
     Company companyToDelete,
   ) async {
-    // Marcar como eliminada en Isar y encolar
     final companyMarkedForDeletion = companyToDelete.copyWith(isDeleted: true);
     await _isarService.saveCompanies([companyMarkedForDeletion]);
 

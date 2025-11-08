@@ -1,12 +1,12 @@
 // lib/services/api_service.dart
-import 'package:dcpos/models/branch.dart'; // 💡 NUEVO
+import 'package:dcpos/models/branch.dart';
 import 'package:dcpos/models/role.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/token.dart';
 import '../models/user.dart';
 import '../models/company.dart';
-import '../providers/auth_provider.dart'; // Para leer el token
+import '../providers/auth_provider.dart';
 
 // Proveedor de solo lectura para la URL base
 final apiUrlProvider = Provider<String>(
@@ -156,7 +156,12 @@ class ApiService {
   Future<List<Role>> fetchAllRoles() async {
     try {
       final response = await dio.get('/roles/');
-      final List<dynamic> jsonList = response.data;
+
+      final responseMap = response.data as Map<String, dynamic>;
+      // Usa la clave 'roles' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['roles'] as List<dynamic>?) ?? [];
+
       return jsonList.map((json) => Role.fromJson(json)).toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener roles: ${e.message}');
@@ -167,7 +172,12 @@ class ApiService {
   Future<List<User>> fetchAllUsers() async {
     try {
       final response = await dio.get('/users/');
-      final List<dynamic> jsonList = response.data;
+
+      final responseMap = response.data as Map<String, dynamic>;
+      // Se asume la clave 'data' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['data'] as List<dynamic>?) ?? [];
+
       return jsonList.map((json) => User.fromJson(json)).toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener usuarios: ${e.message}');
@@ -176,11 +186,10 @@ class ApiService {
 
   Future<User> createUser(Map<String, dynamic> userData) async {
     try {
-      // 🚨 CORRECCIÓN: Añadir la barra final para evitar el 307 Redirect.
+      // Usa la barra final: /users/
       final response = await dio.post('/users/', data: userData);
       return User.fromJson(response.data);
     } on DioException catch (e) {
-      // Se mantiene el manejo de errores original.
       final errorMessage =
           e.response?.data?['detail'] ?? 'Error desconocido al crear usuario.';
       throw Exception(errorMessage);
@@ -189,8 +198,8 @@ class ApiService {
 
   Future<User> updateUser(String userId, Map<String, dynamic> userData) async {
     try {
-      // Se asume que el backend usa PATCH o PUT sin la barra al final
-      final response = await dio.patch('/users/$userId', data: userData);
+      // Corrección para 404: Añadir la barra final.
+      final response = await dio.patch('/users/$userId/', data: userData);
       return User.fromJson(response.data);
     } on DioException catch (e) {
       final errorMessage =
@@ -202,7 +211,7 @@ class ApiService {
 
   Future<void> deleteUser(String userId) async {
     try {
-      // Se asume que el backend usa DELETE sin la barra al final
+      // Se asume que DELETE usa /users/$userId sin barra final.
       await dio.delete('/users/$userId');
     } on DioException catch (e) {
       final errorMessage =
@@ -216,17 +225,46 @@ class ApiService {
   // 💡 MÉTODOS PARA COMPANY
   // ----------------------------------------------------------------------
   Future<List<Company>> fetchCompanies() async {
-    final response = await dio.get('/platform/companies');
-    final List<dynamic> jsonList = response.data;
-    return jsonList.map((json) => Company.fromJson(json)).toList();
+    try {
+      final response = await dio.get('/platform/companies');
+
+      // Se asume que la respuesta es DIRECTAMENTE una List<dynamic>.
+      final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
+
+      return jsonList.map((json) => Company.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener compañías: ${e.message}');
+    }
   }
 
   Future<Company> createCompany(Map<String, dynamic> data) async {
-    final response = await dio.post(
-      '/platform/companies',
-      data: data, // ✅ CORRECCIÓN: Asegurar que los datos se envían
-    );
-    return Company.fromJson(response.data);
+    try {
+      final response = await dio.post('/platform/companies', data: data);
+      return Company.fromJson(response.data);
+    } on DioException catch (e) {
+      // 💡 CORRECCIÓN EN EL MANEJO DE ERRORES:
+      if (e.response != null) {
+        // Intentamos obtener el detalle del error del cuerpo de la respuesta
+        final errorDetail = e.response?.data is Map
+            ? e.response?.data['detail'] as String?
+            : null;
+
+        // Si es 403, lanzamos una excepción con el mensaje del backend o uno predefinido.
+        if (e.response!.statusCode == 403) {
+          throw Exception(
+            errorDetail ??
+                'Fallo de Autorización (403): Permiso denegado por el servidor.',
+          );
+        }
+
+        // Para otros errores de respuesta (4xx, 5xx)
+        throw Exception(
+          errorDetail ?? 'Error HTTP ${e.response!.statusCode}: ${e.message}',
+        );
+      }
+      // Si el error no es de respuesta (ej: error de conexión)
+      throw Exception('Error de red al crear compañía: ${e.message}');
+    }
   }
 
   Future<Company> updateCompany(
@@ -248,9 +286,18 @@ class ApiService {
   // 💡 MÉTODOS PARA BRANCH (NUEVOS)
   // ----------------------------------------------------------------------
   Future<List<Branch>> fetchBranches(String companyId) async {
-    final response = await dio.get('/platform/companies/$companyId/branches');
-    final List<dynamic> jsonList = response.data;
-    return jsonList.map((json) => Branch.fromJson(json)).toList();
+    try {
+      final response = await dio.get('/platform/companies/$companyId/branches');
+
+      final responseMap = response.data as Map<String, dynamic>;
+      // Se asume la clave 'data' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['data'] as List<dynamic>?) ?? [];
+
+      return jsonList.map((json) => Branch.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener sucursales: ${e.message}');
+    }
   }
 
   Future<Branch> createBranch(

@@ -32,17 +32,33 @@ class BranchesScreen extends ConsumerWidget {
     return selectedCompany.id;
   }
 
+  // 🚀 FUNCIÓN PARA FORZAR LA RECARGA Y SINCRONIZACIÓN
+  void _reloadBranches(WidgetRef ref) {
+    // Invalida el proveedor, forzando la recarga de la base de datos local
+    // y la sincronización con la API (según la implementación de branchesProvider).
+    ref.invalidate(branchesProvider);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final companiesAsync = ref.watch(companiesProvider);
     final branchesAsync = ref.watch(branchesProvider);
 
-    // 💡 CORRECCIÓN: Calcular el ID fuera del bloque 'when' para que sea accesible
-    // Se usa el valor actual de companiesAsync.value (que puede ser null si aún no carga)
+    // Calcular el ID fuera del bloque 'when' para que sea accesible al FAB
     final fabCompanyId = _getCompanyIdToFilter(companiesAsync.value);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('🏢 Gestión de Sucursales')),
+      appBar: AppBar(
+        title: const Text('🏢 Gestión de Sucursales'),
+        actions: [
+          // 💡 BOTÓN DE REFRESH AGREGADO
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _reloadBranches(ref),
+            tooltip: 'Recargar y sincronizar sucursales',
+          ),
+        ],
+      ),
       body: companiesAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (err, stack) =>
@@ -56,7 +72,6 @@ class BranchesScreen extends ConsumerWidget {
             );
           }
 
-          // Garantizado que companiesAsync.value no es nulo aquí, usamos el helper
           final companyIdToFilter = fabCompanyId!;
           final selectedCompany = companies.firstWhere(
             (c) => c.id == companyIdToFilter,
@@ -181,7 +196,6 @@ class BranchesScreen extends ConsumerWidget {
     WidgetRef ref,
     String companyId,
   ) {
-    // ... (El resto de la lógica de _showCreateDialog es correcta)
     final nameController = TextEditingController();
     final addressController = TextEditingController();
 
@@ -234,7 +248,6 @@ class BranchesScreen extends ConsumerWidget {
     String companyId,
     String branchId,
   ) {
-    // ... (El resto de la lógica de _confirmDelete es correcta)
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
