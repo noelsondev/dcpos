@@ -2507,8 +2507,8 @@ UserCreateLocal _$UserCreateLocalFromJson(Map<String, dynamic> json) {
     roleId: json['role_id'] as String,
     roleName: json['role_name'] as String,
     isActive: json['isActive'] as bool? ?? true,
-    companyId: json['companyId'] as String?,
-    branchId: json['branchId'] as String?,
+    companyId: json['company_id'] as String?,
+    branchId: json['branch_id'] as String?,
   );
 }
 
@@ -2519,8 +2519,8 @@ Map<String, dynamic> _$UserCreateLocalToJson(UserCreateLocal instance) =>
       'role_id': instance.roleId,
       'role_name': instance.roleName,
       'isActive': instance.isActive,
-      'companyId': instance.companyId,
-      'branchId': instance.branchId,
+      'company_id': instance.companyId,
+      'branch_id': instance.branchId,
     };
 
 UserUpdateLocal _$UserUpdateLocalFromJson(Map<String, dynamic> json) =>
@@ -2531,8 +2531,8 @@ UserUpdateLocal _$UserUpdateLocalFromJson(Map<String, dynamic> json) =>
       roleName: json['roleName'] as String?,
       roleId: json['role_id'] as String?,
       isActive: json['isActive'] as bool?,
-      companyId: json['companyId'] as String?,
-      branchId: json['branchId'] as String?,
+      companyId: json['company_id'] as String?,
+      branchId: json['branch_id'] as String?,
     );
 
 Map<String, dynamic> _$UserUpdateLocalToJson(UserUpdateLocal instance) {
@@ -2550,7 +2550,7 @@ Map<String, dynamic> _$UserUpdateLocalToJson(UserUpdateLocal instance) {
   writeNotNull('username', instance.username);
   writeNotNull('password', instance.password);
   writeNotNull('isActive', instance.isActive);
-  writeNotNull('companyId', instance.companyId);
-  writeNotNull('branchId', instance.branchId);
+  writeNotNull('company_id', instance.companyId);
+  writeNotNull('branch_id', instance.branchId);
   return val;
 }

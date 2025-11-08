@@ -140,26 +140,27 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
     String? finalBranchId = _selectedBranchId;
 
     // ------------------------------------------------------
-    // 🚨 VALIDACIÓN LOCAL PARA COMPANY_ADMIN (y otros roles requeridos)
+    // 🚨 LÓGICA DE ASIGNACIÓN/VALIDACIÓN DE IDS
     // ------------------------------------------------------
     if (isCompanyRequired) {
-      // Si el usuario logueado es Company Admin
+      // Rol REQUIERE compañía
       if (isCurrentUserCompanyAdmin) {
-        // 1. Validación de Compañía (Si intenta asignar una que NO es la suya)
-        if (finalCompanyId != null && finalCompanyId != currentUser.companyId) {
+        // CASO 1: Compañía Admin - Forzamos su propio Company ID
+        finalCompanyId = currentUser.companyId;
+
+        // Validación de seguridad: no debería pasar, pero confirmamos.
+        if (finalCompanyId == null) {
           setState(() {
             _companyIdValidationError =
-                'Acceso Denegado: Solo puedes asignar usuarios a tu propia compañía.';
+                'Error interno: El Company Admin no tiene companyId asignado.';
             _isLoading = false;
           });
           return;
         }
-
-        // Forzamos su Company ID para la operación
-        finalCompanyId = currentUser.companyId;
+        // La validación de que no pueden asignar a otra compañía se hace implícita
+        // porque el dropdown para Global Admin está oculto.
       } else {
-        // Si el usuario logueado NO es Company Admin (Global Admin)
-
+        // CASO 2: Global Admin - Requiere selección
         if (finalCompanyId == null) {
           setState(() {
             _companyIdValidationError =
@@ -170,7 +171,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
         }
       }
 
-      // 2. VALIDACIÓN MANUAL PARA SUCURSAL SI ES CAJERO O CONTADOR
+      // VALIDACIÓN DE SUCURSAL (si el rol requiere Branch ID)
       if (isBranchRequired) {
         if (finalBranchId == null || finalBranchId.isEmpty) {
           setState(() {
@@ -180,33 +181,30 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           });
           return;
         }
+      } else {
+        // Si requiere Company ID, pero NO Branch ID (ej: company_admin), limpiamos la sucursal.
+        finalBranchId = null;
       }
-    }
-    // ------------------------------------------------------
-
-    // A. Roles que NO requieren compañía/sucursal (limpiar IDs)
-    if (!isCompanyRequired) {
+    } else {
+      // Rol NO requiere compañía (ej: global_admin) - Limpiamos ambos IDs
       finalCompanyId = null;
       finalBranchId = null;
     }
-    // B. Rol 'company_admin' requiere compañía, pero NO sucursal
-    else if (_selectedRoleName == 'company_admin') {
-      finalBranchId = null;
-    }
-    // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
+    // ------------------------------------------------------
 
     try {
       if (widget.userToEdit == null) {
         // --- CREACIÓN (Offline-First) ---
         final newUserId = ref.read(uuidProvider).v4();
 
+        // 💡 Aquí se usan los IDs finales que fueron validados o asignados
         final newUser = UserCreateLocal(
           username: _usernameController.text,
           password: _passwordController.text,
           roleId: _selectedRoleId!,
           roleName: _selectedRoleName!,
           localId: newUserId,
-          companyId: finalCompanyId,
+          companyId: finalCompanyId, // ✅ Enviará el ID correcto o null
           branchId: finalBranchId,
           isActive: true,
         );
@@ -214,6 +212,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
         await usersNotifier.createUser(newUser);
       } else {
         // --- EDICIÓN (Offline-First) ---
+        // 💡 Aquí se usan los IDs finales que fueron validados o asignados
         final updatedUser = UserUpdateLocal(
           id: widget.userToEdit!.id,
           username: _usernameController.text,
@@ -222,7 +221,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
               : null,
           roleId: _selectedRoleId,
           roleName: _selectedRoleName,
-          companyId: finalCompanyId,
+          companyId: finalCompanyId, // ✅ Enviará el ID correcto o null
           branchId: finalBranchId,
         );
 
@@ -260,9 +259,10 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
   Widget _buildCompanyDropdown(List<Company> companies) {
     return DropdownButtonFormField<String>(
-      decoration: const InputDecoration(
+      decoration: InputDecoration(
         labelText: 'Compañía (Requerido)',
-        border: OutlineInputBorder(),
+        border: const OutlineInputBorder(),
+        errorText: _companyIdValidationError, // Muestra el error manual
       ),
       value: _selectedCompanyId,
       items: companies.map((c) {
@@ -273,14 +273,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           _selectedCompanyId = newValue;
           // Al cambiar la compañía, forzamos a nulo la sucursal
           _selectedBranchId = null;
+          _companyIdValidationError = null; // Limpiar error al cambiar
         });
       },
-      validator: (value) {
-        if (value == null || value.isEmpty) {
-          return 'Debes seleccionar una compañía.';
-        }
-        return null;
-      },
+      // Ya no necesitamos el validador nativo aquí, la validación manual es suficiente.
+      validator: (value) => _companyIdValidationError != null ? '' : null,
     );
   }
 
@@ -289,9 +286,10 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
       children: [
         const SizedBox(height: 20),
         DropdownButtonFormField<String>(
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Sucursal (Requerido)',
-            border: OutlineInputBorder(),
+            border: const OutlineInputBorder(),
+            errorText: _branchIdValidationError, // Muestra el error manual
           ),
           value: _selectedBranchId,
           items: availableBranches.map((b) {
@@ -300,15 +298,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           onChanged: (String? newValue) {
             setState(() {
               _selectedBranchId = newValue;
+              _branchIdValidationError = null; // Limpiar error al cambiar
             });
           },
-          validator: (value) {
-            // Este validador nativo se mantiene como fallback para Global Admin
-            if (value == null || value.isEmpty) {
-              return 'Debes seleccionar una sucursal.';
-            }
-            return null;
-          },
+          // Ya no necesitamos el validador nativo aquí, la validación manual es suficiente.
+          validator: (value) => _branchIdValidationError != null ? '' : null,
         ),
       ],
     );
@@ -442,9 +436,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                             // Si es Company Admin y el rol lo requiere, precarga su ID
                             _selectedCompanyId = currentUser!.companyId;
                           } else if (widget.userToEdit == null) {
-                            // Si es Global Admin creando uno nuevo, limpia la selección de compañía
+                            // Si es Global Admin creando uno nuevo, limpia la selección de compañía para forzar la selección
                             _selectedCompanyId = null;
                           }
+                          // 💡 Si no se está creando uno nuevo y es Global Admin,
+                          // mantenemos el valor que tiene _selectedCompanyId (sea null o el ID del usuario que se edita)
 
                           _companyIdValidationError = null;
                           _branchIdValidationError = null;
@@ -531,6 +527,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                       ),
 
                     // Mostrar error de validación manual de la compañía
+                    // 💡 Quitamos el padding si no hay error
                     if (_companyIdValidationError != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 8.0),

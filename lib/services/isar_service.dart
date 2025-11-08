@@ -99,12 +99,10 @@ class IsarService {
     return await isar.users.where().findAll();
   }
 
-  // 🚨 CORRECCIÓN CLAVE PARA LA ELIMINACIÓN 🚨
+  // 🚨 MÉTODO PARA ELIMINAR UN ÚNICO USUARIO
   Future<void> deleteUser(String userId) async {
     final isar = await db;
     await isar.writeTxn(() async {
-      // En lugar de usar fastHash(userId) y .delete(isarId),
-      // usamos una consulta filter() sobre el campo 'id' de tipo String.
       final count = await isar.users
           .filter()
           .idEqualTo(userId) // Filtramos por el ID externo (String)
@@ -133,24 +131,22 @@ class IsarService {
 
   Future<void> saveRoles(List<Role> roles) async {
     final isar = await db;
-    if (isar == null) return;
-    await isar!.writeTxn(() async {
-      await isar!.roles.putAll(roles); // putAll usa el id único para put/update
+    await isar.writeTxn(() async {
+      await isar.roles.putAll(roles); // putAll usa el id único para put/update
     });
   }
 
   // Obtiene todos los roles para el modo offline
   Future<List<Role>> getAllRoles() async {
     final isar = await db;
-    if (isar == null) return [];
-    return isar!.roles.where().findAll();
+    return isar.roles.where().findAll();
   }
 
-  // 🚨 NUEVO MÉTODO CRÍTICO para la sincronización de CREACIÓN
+  // 🚨 MÉTODO DE SINCRONIZACIÓN DE ID REAL
   Future<void> updateLocalUserWithRealId(String localId, User newUser) async {
     final isar = await db;
     await isar.writeTxn(() async {
-      // 1. Encontrar el usuario temporal por su ID temporal (que está en el campo 'id')
+      // 1. Encontrar y eliminar el usuario temporal por su ID temporal
       final localUserIsarId = await isar.users
           .filter()
           .idEqualTo(localId)
@@ -158,12 +154,10 @@ class IsarService {
           .findFirst();
 
       if (localUserIsarId != null) {
-        // 2. Eliminar el registro temporal (que tiene el localId)
         await isar.users.delete(localUserIsarId);
       }
 
-      // 3. Guardar el nuevo registro (con el ID real/UUID devuelto por el API)
-      // El método put manejará la inserción del nuevo User.
+      // 2. Guardar el nuevo registro (con el ID real/UUID devuelto por el API)
       await isar.users.put(newUser);
     });
     print(
@@ -172,8 +166,9 @@ class IsarService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // 💡 MÉTODOS PARA COMPANY (CON ELIMINACIÓN EN CASCADA)
   // ----------------------------------------------------------------------
+
   Future<List<Company>> getAllCompanies() async {
     final isar = await db;
     return isar.companys.filter().isDeletedEqualTo(false).findAll();
@@ -186,10 +181,48 @@ class IsarService {
     });
   }
 
-  Future<void> deleteCompany(String companyId) async {
+  // Método simple de eliminación de Company (ya no se usa directamente para la cascada)
+  // Lo mantenemos por si la cola de sincronización lo necesita para una limpieza superficial.
+  Future<void> _deleteCompanyRecord(String companyId) async {
     final isar = await db;
     await isar.writeTxn(() async {
       await isar.companys.filter().idEqualTo(companyId).deleteAll();
+    });
+  }
+
+  // 🎯 NUEVO MÉTODO CRÍTICO: Elimina Company y sus relaciones (Users, Branches)
+  Future<void> deleteCompanyAndCascade(String companyId) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      // 1. Eliminar la Compañía
+      final companyDeletedCount = await isar.companys
+          .filter()
+          .idEqualTo(companyId)
+          .deleteAll();
+
+      print(
+        '✅ [Isar] Compañía ID $companyId eliminada. ($companyDeletedCount registros)',
+      );
+
+      // 2. Eliminar Usuarios relacionados (donde companyId == companyId)
+      final deletedUsersCount = await isar.users
+          .filter()
+          .companyIdEqualTo(companyId) // Filtra por la clave foránea en User
+          .deleteAll();
+
+      print(
+        '✅ [Isar] Se eliminaron $deletedUsersCount usuarios asociados a $companyId.',
+      );
+
+      // 3. Eliminar Sucursales (Branches) relacionadas (donde companyId == companyId)
+      final deletedBranchesCount = await isar.branchs
+          .filter()
+          .companyIdEqualTo(companyId) // Filtra por la clave foránea en Branch
+          .deleteAll();
+
+      print(
+        '✅ [Isar] Se eliminaron $deletedBranchesCount sucursales asociadas a $companyId.',
+      );
     });
   }
 
@@ -267,6 +300,10 @@ class IsarService {
       await isar.branchs.put(newBranch);
     });
   }
+
+  // ----------------------------------------------------------------------
+  // --- MÉTODOS DE COLA DE SINCRONIZACIÓN (SyncQueue) ---
+  // ----------------------------------------------------------------------
 
   Future<void> enqueueSyncItem(SyncQueueItem item) async {
     final isar = await db;

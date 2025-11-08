@@ -50,10 +50,10 @@ class User {
 
   // Campos relacionados con la jerarquía (pueden ser nulos)
   @JsonKey(name: 'company_id')
-  final String? companyId;
+  final String? companyId; // ✅ Correcto en el modelo principal
 
   @JsonKey(name: 'branch_id')
-  final String? branchId;
+  final String? branchId; // ✅ Correcto en el modelo principal
 
   // Tokens (NO VIENEN EN /auth/me, pero se guardan para persistencia)
   final String? accessToken;
@@ -82,7 +82,7 @@ class User {
 }
 
 // ----------------------------------------------------------------------
-// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (OFFLINE FIRST)
+// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (CREACIÓN)
 // ----------------------------------------------------------------------
 
 // Este es el modelo que el Admin crea en la app.
@@ -102,7 +102,12 @@ class UserCreateLocal {
 
   final bool isActive;
 
+  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'company_id'
+  @JsonKey(name: 'company_id')
   final String? companyId;
+
+  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'branch_id'
+  @JsonKey(name: 'branch_id')
   final String? branchId;
 
   // 💡 CAMBIO CRÍTICO 1: Hacer 'localId' nullable.
@@ -146,7 +151,13 @@ class UserUpdateLocal {
   final String? roleName;
 
   final bool? isActive;
+
+  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'company_id'
+  @JsonKey(name: 'company_id')
   final String? companyId;
+
+  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'branch_id'
+  @JsonKey(name: 'branch_id')
   final String? branchId;
 
   UserUpdateLocal({

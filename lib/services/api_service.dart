@@ -283,16 +283,15 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA BRANCH (NUEVOS)
+  // 💡 MÉTODOS PARA BRANCH (NUEVOS y CORREGIDO fetchBranches)
   // ----------------------------------------------------------------------
   Future<List<Branch>> fetchBranches(String companyId) async {
     try {
       final response = await dio.get('/platform/companies/$companyId/branches');
 
-      final responseMap = response.data as Map<String, dynamic>;
-      // Se asume la clave 'data' y maneja nulos.
-      final List<dynamic> jsonList =
-          (responseMap['data'] as List<dynamic>?) ?? [];
+      // 🎯 CORRECCIÓN: Se asume que la respuesta es DIRECTAMENTE una List<dynamic>,
+      // al igual que fetchCompanies.
+      final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
 
       return jsonList.map((json) => Branch.fromJson(json)).toList();
     } on DioException catch (e) {
