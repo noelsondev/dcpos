@@ -1,66 +1,77 @@
-// lib/screens/login_screen.dart
+// lib/screens/login_screen.dart (COMPLETO Y CORREGIDO)
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/user.dart';
 import '../providers/auth_provider.dart';
+import 'home_screen.dart';
+import '../utils/snackbar_utils.dart';
 
-class LoginScreen extends ConsumerWidget {
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final usernameController = TextEditingController();
-    final passwordController = TextEditingController();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
+}
 
-    final authState = ref.watch(authProvider);
+class _LoginScreenState extends ConsumerState<LoginScreen> {
+  final usernameController = TextEditingController(text: 'noelson');
+  final passwordController = TextEditingController(text: '123456');
+  bool _isLoading = false; // Estado de carga local
 
-    void _submitLogin() {
-      if (usernameController.text.isEmpty || passwordController.text.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Por favor, ingresa usuario y contraseña.'),
-          ),
-        );
-        return;
-      }
-      ref
-          .read(authProvider.notifier)
-          .login(usernameController.text, passwordController.text);
+  @override
+  void dispose() {
+    usernameController.dispose();
+    passwordController.dispose();
+    super.dispose();
+  }
+
+  void _submitLogin() async {
+    final username = usernameController.text;
+    final password = passwordController.text;
+
+    FocusScope.of(context).unfocus();
+
+    setState(() => _isLoading = true); // Iniciar carga
+
+    // 💡 AHORA USAMOS EL VALOR DEVUELTO PARA SABER SI HUBO ERROR
+    final errorMessage = await ref
+        .read(authProvider.notifier)
+        .login(username, password);
+
+    setState(() => _isLoading = false); // Finalizar carga
+
+    if (errorMessage != null) {
+      // 🚨 Error: El AuthProvider devolvió un mensaje de error
+      // Usamos 'Exception(errorMessage)' para que SnackbarUtils.showError lo formatee.
+      SnackbarUtils.showError(context, Exception(errorMessage));
+    } else {
+      // ✅ Éxito: Ya fue manejado en el AuthProvider (state = AsyncValue.data).
+      // El ref.listen se encargará de la navegación.
     }
+  }
 
-    // Escucha los cambios de estado para mostrar errores
-    ref.listen<AsyncValue>(authProvider, (_, next) {
-      if (next.hasError && !next.isLoading) {
-        final error = next.error;
-        String displayMessage = 'Error inesperado.';
+  @override
+  Widget build(BuildContext context) {
+    // 💡 ref.listen: Se mantiene solo para la NAVEGACIÓN EXITOSA.
+    ref.listen<AsyncValue<User?>>(authProvider, (previous, next) {
+      // La navegación solo debe ocurrir si el state se actualizó a DATA y hay un User.
+      if (next.hasValue && next.value != null && !next.isReloading) {
+        // Opcional: Deshabilita la navegación si el login fue en modo offline
+        // if (previous?.value?.accessToken == null && next.value!.accessToken == null) return;
 
-        // Lógica de visualización del mensaje
-        if (error is Exception) {
-          // Captura los mensajes limpios lanzados por ApiService (e.g., 'Credenciales inválidas.')
-          displayMessage = error.toString().replaceFirst('Exception: ', '');
-        } else if (error.toString().contains('DioException') ||
-            error.toString().contains('SocketException')) {
-          // Error de conexión/servidor
-          displayMessage =
-              'Error de conexión: Verifica que el backend esté activo.';
-        }
-        // 🚨 MEJORA CLAVE: Capturar y traducir los errores de tipo 'Null'
-        else if (error.toString().contains(
-          "type 'Null' is not a subtype of type",
-        )) {
-          displayMessage =
-              'Fallo de datos de la API. Contacte al soporte. (El servidor envió datos incompletos).';
-        } else {
-          // Otros errores (Isar, JSON genérico, etc.)
-          displayMessage =
-              'Fallo de servicio: ${error.toString().split(':').last.trim()}';
-        }
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(displayMessage), backgroundColor: Colors.red),
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
+        );
+        SnackbarUtils.showSuccess(
+          context,
+          'Bienvenido, ${next.value!.username}!',
         );
       }
     });
+
+    // Usamos el estado de carga local para el botón, ya que el AuthProvider ya no lo gestiona.
+    // final authState = ref.watch(authProvider); // <-- Ya no es necesario si usamos _isLoading
 
     return Scaffold(
       appBar: AppBar(title: const Text('DCPOS - Login')),
@@ -100,11 +111,12 @@ class LoginScreen extends ConsumerWidget {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: authState.isLoading ? null : _submitLogin,
-                  child: authState.isLoading
+                  // Usamos el estado de carga local
+                  onPressed: _isLoading ? null : _submitLogin,
+                  child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
-                          'Iniciar Sesión',
+                          'INICIAR SESIÓN',
                           style: TextStyle(fontSize: 18),
                         ),
                 ),

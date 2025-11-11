@@ -29,6 +29,8 @@ abstract class _$UserCWProxy {
 
   User refreshToken(String? refreshToken);
 
+  User isPendingSync(bool isPendingSync);
+
   /// This function **does support** nullification of nullable fields. All `null` values passed to `non-nullable` fields will be ignored. You can also use `User(...).copyWith.fieldName(...)` to override fields one at a time with nullification support.
   ///
   /// Usage
@@ -47,6 +49,7 @@ abstract class _$UserCWProxy {
     String? branchId,
     String? accessToken,
     String? refreshToken,
+    bool? isPendingSync,
   });
 }
 
@@ -90,6 +93,9 @@ class _$UserCWProxyImpl implements _$UserCWProxy {
   User refreshToken(String? refreshToken) => this(refreshToken: refreshToken);
 
   @override
+  User isPendingSync(bool isPendingSync) => this(isPendingSync: isPendingSync);
+
+  @override
 
   /// This function **does support** nullification of nullable fields. All `null` values passed to `non-nullable` fields will be ignored. You can also use `User(...).copyWith.fieldName(...)` to override fields one at a time with nullification support.
   ///
@@ -109,6 +115,7 @@ class _$UserCWProxyImpl implements _$UserCWProxy {
     Object? branchId = const $CopyWithPlaceholder(),
     Object? accessToken = const $CopyWithPlaceholder(),
     Object? refreshToken = const $CopyWithPlaceholder(),
+    Object? isPendingSync = const $CopyWithPlaceholder(),
   }) {
     return User(
       id: id == const $CopyWithPlaceholder() || id == null
@@ -155,6 +162,11 @@ class _$UserCWProxyImpl implements _$UserCWProxy {
           ? _value.refreshToken
           // ignore: cast_nullable_to_non_nullable
           : refreshToken as String?,
+      isPendingSync:
+          isPendingSync == const $CopyWithPlaceholder() || isPendingSync == null
+              ? _value.isPendingSync
+              // ignore: cast_nullable_to_non_nullable
+              : isPendingSync as bool,
     );
   }
 }
@@ -215,23 +227,28 @@ const UserSchema = CollectionSchema(
       name: r'isDeleted',
       type: IsarType.bool,
     ),
-    r'refreshToken': PropertySchema(
+    r'isPendingSync': PropertySchema(
       id: 7,
+      name: r'isPendingSync',
+      type: IsarType.bool,
+    ),
+    r'refreshToken': PropertySchema(
+      id: 8,
       name: r'refreshToken',
       type: IsarType.string,
     ),
     r'roleId': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'roleId',
       type: IsarType.string,
     ),
     r'roleName': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'roleName',
       type: IsarType.string,
     ),
     r'username': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'username',
       type: IsarType.string,
     )
@@ -341,10 +358,11 @@ void _userSerialize(
   writer.writeString(offsets[4], object.id);
   writer.writeBool(offsets[5], object.isActive);
   writer.writeBool(offsets[6], object.isDeleted);
-  writer.writeString(offsets[7], object.refreshToken);
-  writer.writeString(offsets[8], object.roleId);
-  writer.writeString(offsets[9], object.roleName);
-  writer.writeString(offsets[10], object.username);
+  writer.writeBool(offsets[7], object.isPendingSync);
+  writer.writeString(offsets[8], object.refreshToken);
+  writer.writeString(offsets[9], object.roleId);
+  writer.writeString(offsets[10], object.roleName);
+  writer.writeString(offsets[11], object.username);
 }
 
 User _userDeserialize(
@@ -361,10 +379,11 @@ User _userDeserialize(
     id: reader.readString(offsets[4]),
     isActive: reader.readBoolOrNull(offsets[5]) ?? true,
     isDeleted: reader.readBoolOrNull(offsets[6]) ?? false,
-    refreshToken: reader.readStringOrNull(offsets[7]),
-    roleId: reader.readString(offsets[8]),
-    roleName: reader.readString(offsets[9]),
-    username: reader.readString(offsets[10]),
+    isPendingSync: reader.readBoolOrNull(offsets[7]) ?? false,
+    refreshToken: reader.readStringOrNull(offsets[8]),
+    roleId: reader.readString(offsets[9]),
+    roleName: reader.readString(offsets[10]),
+    username: reader.readString(offsets[11]),
   );
   return object;
 }
@@ -391,12 +410,14 @@ P _userDeserializeProp<P>(
     case 6:
       return (reader.readBoolOrNull(offset) ?? false) as P;
     case 7:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBoolOrNull(offset) ?? false) as P;
     case 8:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 9:
       return (reader.readString(offset)) as P;
     case 10:
+      return (reader.readString(offset)) as P;
+    case 11:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -1438,6 +1459,16 @@ extension UserQueryFilter on QueryBuilder<User, User, QFilterCondition> {
     });
   }
 
+  QueryBuilder<User, User, QAfterFilterCondition> isPendingSyncEqualTo(
+      bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isPendingSync',
+        value: value,
+      ));
+    });
+  }
+
   QueryBuilder<User, User, QAfterFilterCondition> isarIdEqualTo(Id value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -2112,6 +2143,18 @@ extension UserQuerySortBy on QueryBuilder<User, User, QSortBy> {
     });
   }
 
+  QueryBuilder<User, User, QAfterSortBy> sortByIsPendingSync() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isPendingSync', Sort.asc);
+    });
+  }
+
+  QueryBuilder<User, User, QAfterSortBy> sortByIsPendingSyncDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isPendingSync', Sort.desc);
+    });
+  }
+
   QueryBuilder<User, User, QAfterSortBy> sortByRefreshToken() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'refreshToken', Sort.asc);
@@ -2246,6 +2289,18 @@ extension UserQuerySortThenBy on QueryBuilder<User, User, QSortThenBy> {
     });
   }
 
+  QueryBuilder<User, User, QAfterSortBy> thenByIsPendingSync() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isPendingSync', Sort.asc);
+    });
+  }
+
+  QueryBuilder<User, User, QAfterSortBy> thenByIsPendingSyncDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isPendingSync', Sort.desc);
+    });
+  }
+
   QueryBuilder<User, User, QAfterSortBy> thenByIsarId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isarId', Sort.asc);
@@ -2355,6 +2410,12 @@ extension UserQueryWhereDistinct on QueryBuilder<User, User, QDistinct> {
     });
   }
 
+  QueryBuilder<User, User, QDistinct> distinctByIsPendingSync() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isPendingSync');
+    });
+  }
+
   QueryBuilder<User, User, QDistinct> distinctByRefreshToken(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -2433,6 +2494,12 @@ extension UserQueryProperty on QueryBuilder<User, User, QQueryProperty> {
     });
   }
 
+  QueryBuilder<User, bool, QQueryOperations> isPendingSyncProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isPendingSync');
+    });
+  }
+
   QueryBuilder<User, String?, QQueryOperations> refreshTokenProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'refreshToken');
@@ -2473,12 +2540,13 @@ User _$UserFromJson(Map<String, dynamic> json) {
     roleId: json['role_id'] as String,
     roleName: json['role_name'] as String,
     createdAt: json['created_at'] as String,
-    isActive: json['isActive'] as bool? ?? true,
-    isDeleted: json['isDeleted'] as bool? ?? false,
+    isActive: json['is_active'] as bool? ?? true,
+    isDeleted: json['is_deleted'] as bool? ?? false,
     companyId: json['company_id'] as String?,
     branchId: json['branch_id'] as String?,
-    accessToken: json['accessToken'] as String?,
-    refreshToken: json['refreshToken'] as String?,
+    accessToken: json['access_token'] as String?,
+    refreshToken: json['refresh_token'] as String?,
+    isPendingSync: json['is_pending_sync'] as bool? ?? false,
   );
 }
 
@@ -2487,12 +2555,13 @@ Map<String, dynamic> _$UserToJson(User instance) => <String, dynamic>{
       'username': instance.username,
       'role_id': instance.roleId,
       'role_name': instance.roleName,
-      'isActive': instance.isActive,
-      'isDeleted': instance.isDeleted,
+      'is_active': instance.isActive,
+      'is_deleted': instance.isDeleted,
+      'is_pending_sync': instance.isPendingSync,
       'company_id': instance.companyId,
       'branch_id': instance.branchId,
-      'accessToken': instance.accessToken,
-      'refreshToken': instance.refreshToken,
+      'access_token': instance.accessToken,
+      'refresh_token': instance.refreshToken,
       'created_at': instance.createdAt,
     };
 
@@ -2506,7 +2575,7 @@ UserCreateLocal _$UserCreateLocalFromJson(Map<String, dynamic> json) {
     password: json['password'] as String,
     roleId: json['role_id'] as String,
     roleName: json['role_name'] as String,
-    isActive: json['isActive'] as bool? ?? true,
+    isActive: json['is_active'] as bool? ?? true,
     companyId: json['company_id'] as String?,
     branchId: json['branch_id'] as String?,
   );
@@ -2518,7 +2587,7 @@ Map<String, dynamic> _$UserCreateLocalToJson(UserCreateLocal instance) =>
       'password': instance.password,
       'role_id': instance.roleId,
       'role_name': instance.roleName,
-      'isActive': instance.isActive,
+      'is_active': instance.isActive,
       'company_id': instance.companyId,
       'branch_id': instance.branchId,
     };
@@ -2528,9 +2597,9 @@ UserUpdateLocal _$UserUpdateLocalFromJson(Map<String, dynamic> json) =>
       id: json['id'] as String,
       username: json['username'] as String?,
       password: json['password'] as String?,
-      roleName: json['roleName'] as String?,
+      roleName: json['role_name'] as String?,
       roleId: json['role_id'] as String?,
-      isActive: json['isActive'] as bool?,
+      isActive: json['is_active'] as bool?,
       companyId: json['company_id'] as String?,
       branchId: json['branch_id'] as String?,
     );
@@ -2549,7 +2618,7 @@ Map<String, dynamic> _$UserUpdateLocalToJson(UserUpdateLocal instance) {
   writeNotNull('role_id', instance.roleId);
   writeNotNull('username', instance.username);
   writeNotNull('password', instance.password);
-  writeNotNull('isActive', instance.isActive);
+  writeNotNull('is_active', instance.isActive);
   writeNotNull('company_id', instance.companyId);
   writeNotNull('branch_id', instance.branchId);
   return val;

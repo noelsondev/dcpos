@@ -1,0 +1,5 @@
+QUiero que me arregle este esta parte que estoy en el proyecto para que todo funciona bien:
+
+    * los error que llegan del servidor al login o crear algo o ora accion debe aparece en un sncakbar :
+        * y no debe mandar a otra pagina ya que hay error
+    * 

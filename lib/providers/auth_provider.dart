@@ -1,6 +1,7 @@
 // lib/providers/auth_provider.dart
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 import '../models/token.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
@@ -15,17 +16,14 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
   final Ref _ref;
   Token? _token;
 
-  // 💡 NUEVO GETTER: Permite acceder al User? de forma limpia (para CompaniesNotifier)
   User? get user => state.value;
 
-  // Getter para el Refresh Token (para el Interceptor)
   String? get refreshToken => _token?.refreshToken;
 
   AuthNotifier(this._ref) : super(const AsyncValue.loading()) {
     _initialize();
   }
 
-  // Getter para el token (usado por el Interceptor de Dio en api_service.dart)
   String? get accessToken => _token?.accessToken;
 
   // --- Inicialización (Chequeo Offline) ---
@@ -63,18 +61,23 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
 
   // --- Lógica de Login ---
 
-  Future<void> login(String username, String password) async {
-    state = const AsyncValue.loading();
+  // 💡 CAMBIO CRUCIAL: Retorna String? (Error Message) en lugar de void
+  Future<String?> login(String username, String password) async {
+    // Nota: El estado de carga (loading) se gestiona en la UI (LoginScreen)
+    // usando setState() para el botón.
+
     final _apiService = _ref.read(apiServiceProvider);
     final _isarService = _ref.read(isarServiceProvider);
     final _syncService = _ref.read(syncServiceProvider);
 
     try {
+      // 1. Llamada de API y fetch de datos
       final tokenResult = await _apiService.login(username, password);
       _token = tokenResult;
 
       final userResponse = await _apiService.fetchMe();
 
+      // 2. Guardar datos
       final userToSave = userResponse.copyWith(
         accessToken: tokenResult.accessToken,
         refreshToken: tokenResult.refreshToken,
@@ -83,6 +86,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
       print('DEBUG LOGIN: refreshToken=${tokenResult.refreshToken}');
       await _isarService.saveUser(userToSave);
 
+      // 3. Éxito: Actualizar estado y sincronizar
       state = AsyncValue.data(userToSave);
 
       _syncService.startSync();
@@ -90,24 +94,50 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
       print(
         'DEBUG AUTH: Estado final actualizado a DATA. User: ${userToSave.username}',
       );
+      return null; // ✅ Éxito: No hay error.
     } catch (e, st) {
-      print('DEBUG AUTH: Fallo catastrófico en Login: $e');
+      print('DEBUG AUTH: Fallo en Login: $e');
 
-      if (e.toString().contains('DioException') ||
-          e.toString().contains('SocketException')) {
-        final isarUser = await _isarService.getActiveUser();
+      String errorMessage = 'Error desconocido. Inténtalo de nuevo.';
+      dynamic errorForState = e; // Usamos la excepción original para el estado
 
-        if (isarUser != null && isarUser.username == username) {
+      if (e is DioException) {
+        // 1. Error de Autenticación (401, 403, Invalid Credentials)
+        if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
+          errorMessage =
+              e.response?.data?['detail'] ??
+              'Nombre de usuario o contraseña incorrectos.';
+
           print(
-            'DEBUG AUTH: Fallo de red detectado. Autenticación exitosa en modo OFFLINE con Isar.',
+            'DEBUG AUTH: 🛑 Autenticación fallida con el servidor. No se permite fallback offline.',
           );
-
-          state = AsyncValue.data(isarUser);
-          return;
+          errorForState = Exception(
+            errorMessage,
+          ); // Mensaje limpio para el estado
         }
+        // 2. Error de Conexión (Timeout, Sin Conexión, etc.)
+        else if (e.type == DioExceptionType.connectionTimeout ||
+            e.type == DioExceptionType.connectionError ||
+            e.type == DioExceptionType.receiveTimeout) {
+          final isarUser = await _isarService.getActiveUser();
+
+          if (isarUser != null && isarUser.username == username) {
+            print(
+              'DEBUG AUTH: Fallo de red detectado. Autenticación exitosa en modo OFFLINE con Isar.',
+            );
+            state = AsyncValue.data(isarUser);
+            return null; // ✅ Éxito Offline
+          }
+          errorMessage = 'Error de conexión. Verifica tu red.';
+          errorForState = Exception(errorMessage);
+        }
+      } else {
+        errorMessage = 'Fallo inesperado: ${e.toString()}';
       }
 
-      state = AsyncValue.error(e, st);
+      // 4. Fallo: Actualizar estado de error y retornar el mensaje de error
+      state = AsyncValue.error(errorForState, st);
+      return errorMessage; // ❌ Fallo: Retorna el mensaje de error para la UI (Snackbar).
     }
   }
 
@@ -131,12 +161,6 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
     _syncService.startSync();
 
     print('✅ DEBUG REFRESH: Token actualizado con éxito.');
-    print(
-      ' -> Nuevo Access Token (Inicio): ${newToken.accessToken.substring(0, 8)}...',
-    );
-    print(
-      ' -> Nuevo Refresh Token (Inicio): ${newToken.refreshToken?.substring(0, 8)}...',
-    );
   }
 
   // --- Lógica de Logout ---

@@ -8,7 +8,9 @@ import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'users_screen.dart';
 import 'companies_screen.dart';
+import 'login_screen.dart'; // 💡 Asegúrate de importar LoginScreen
 
+// 💡 CAMBIO: Volvemos a ConsumerWidget, eliminando el error de ref.listen en initState
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -16,7 +18,6 @@ class HomeScreen extends ConsumerWidget {
   void _testRefreshToken(BuildContext context, WidgetRef ref) async {
     final apiService = ref.read(apiServiceProvider);
 
-    // Usamos un ScaffoldMessenger para mostrar el estado.
     final messenger = ScaffoldMessenger.of(context);
 
     messenger.showSnackBar(
@@ -64,9 +65,16 @@ class HomeScreen extends ConsumerWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
-            onPressed: () {
-              // Llamada al método logout del Notifier
-              ref.read(authProvider.notifier).logout();
+            onPressed: () async {
+              // 1. Llamar al método logout del Notifier (actualiza el estado)
+              await ref.read(authProvider.notifier).logout();
+
+              // 2. 🚀 CORRECCIÓN: Navegación explícita al LoginScreen, limpiando el stack
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
+                (Route<dynamic> route) =>
+                    false, // Elimina todas las rutas anteriores
+              );
             },
           ),
         ],
@@ -106,7 +114,7 @@ class HomeScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 20),
 
-            // 3. BOTÓN PARA NAVEGAR A GESTIÓN DE SUCURSALES 🏛️ ⬅️ NUEVO
+            // 3. BOTÓN PARA NAVEGAR A GESTIÓN DE SUCURSALES 🏛️
             ElevatedButton.icon(
               icon: const Icon(Icons.apartment),
               label: const Text('GESTIÓN DE SUCURSALES'),

@@ -21,7 +21,7 @@ int fastHash(String string) {
 // 📝 MODELO DE BASE DE DATOS Y API
 // ----------------------------------------------------------------------
 
-@JsonSerializable()
+@JsonSerializable(fieldRename: FieldRename.snake) // Usar snake_case para JSON
 @CopyWith()
 @Collection()
 class User {
@@ -36,11 +36,11 @@ class User {
   @Index(unique: true)
   final String username;
 
-  @JsonKey(name: 'role_id', required: true)
+  @JsonKey(required: true)
   @Index()
   final String roleId;
 
-  @JsonKey(name: 'role_name', required: true)
+  @JsonKey(required: true)
   final String roleName;
 
   final bool isActive;
@@ -48,19 +48,19 @@ class User {
   // 💡 Campo para Borrado Lógico (para Offline-First)
   final bool isDeleted;
 
-  // Campos relacionados con la jerarquía (pueden ser nulos)
-  @JsonKey(name: 'company_id')
-  final String? companyId; // ✅ Correcto en el modelo principal
+  // 🚨 CORRECCIÓN CLAVE: AÑADIDO el campo faltante
+  final bool isPendingSync;
 
-  @JsonKey(name: 'branch_id')
-  final String? branchId; // ✅ Correcto en el modelo principal
+  // Campos relacionados con la jerarquía (pueden ser nulos)
+  final String? companyId;
+
+  final String? branchId;
 
   // Tokens (NO VIENEN EN /auth/me, pero se guardan para persistencia)
   final String? accessToken;
   final String? refreshToken;
 
   // Metadatos
-  @JsonKey(name: 'created_at')
   final String createdAt;
 
   User({
@@ -75,6 +75,8 @@ class User {
     this.branchId,
     this.accessToken,
     this.refreshToken,
+    // 🚨 CORRECCIÓN CLAVE: Inicializar el campo en el constructor
+    this.isPendingSync = false,
   });
 
   factory User.fromJson(Map<String, dynamic> json) => _$UserFromJson(json);
@@ -86,7 +88,7 @@ class User {
 // ----------------------------------------------------------------------
 
 // Este es el modelo que el Admin crea en la app.
-@JsonSerializable()
+@JsonSerializable(fieldRename: FieldRename.snake)
 class UserCreateLocal {
   @JsonKey(required: true)
   final String username;
@@ -94,20 +96,16 @@ class UserCreateLocal {
   @JsonKey(required: true)
   final String password;
 
-  @JsonKey(name: 'role_id', required: true)
+  @JsonKey(required: true)
   final String roleId;
 
-  @JsonKey(name: 'role_name', required: true)
+  @JsonKey(required: true)
   final String roleName;
 
   final bool isActive;
 
-  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'company_id'
-  @JsonKey(name: 'company_id')
   final String? companyId;
 
-  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'branch_id'
-  @JsonKey(name: 'branch_id')
   final String? branchId;
 
   // 💡 CAMBIO CRÍTICO 1: Hacer 'localId' nullable.
@@ -132,13 +130,15 @@ class UserCreateLocal {
 }
 
 // 🚨 MODELO PARA LA ACTUALIZACIÓN (Necesitas esto para la edición)
-@JsonSerializable(includeIfNull: false) // No incluye campos nulos en el JSON
+@JsonSerializable(
+  includeIfNull: false,
+  fieldRename: FieldRename.snake,
+) // No incluye campos nulos en el JSON
 class UserUpdateLocal {
   // ✅ CORREGIDO: Usamos 'id' para ser consistentes.
   final String id;
 
   // ✅ CORREGIDO: Añadido roleId que es esencial para la edición.
-  @JsonKey(name: 'role_id')
   final String? roleId;
 
   final String? username;
@@ -152,12 +152,8 @@ class UserUpdateLocal {
 
   final bool? isActive;
 
-  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'company_id'
-  @JsonKey(name: 'company_id')
   final String? companyId;
 
-  // 💡 CORRECCIÓN CLAVE: Asegurar la serialización a 'branch_id'
-  @JsonKey(name: 'branch_id')
   final String? branchId;
 
   UserUpdateLocal({

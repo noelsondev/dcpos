@@ -2,6 +2,8 @@
 
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+// Importamos Dio para poder usar DioException en la lógica de errores.
+import 'package:dio/dio.dart';
 
 import '../models/user.dart'; // Contiene User, UserCreateLocal, UserUpdateLocal
 import '../models/sync_queue_item.dart';
@@ -30,6 +32,32 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
 
+  // 💡 UTILIDAD DE ERROR INTERNA: Extrae el mensaje de un DioException para logueo
+  String _getApiErrorMessage(
+    dynamic error, {
+    String defaultMsg = 'Error en el servidor o conexión.',
+  }) {
+    if (error is DioException) {
+      final responseData = error.response?.data;
+      if (responseData != null && responseData is Map) {
+        // Intenta extraer 'detail' o 'message' del cuerpo de la respuesta
+        final serverDetail =
+            responseData['detail'] ??
+            responseData['message'] ??
+            responseData.toString();
+
+        // Retorna un mensaje formateado para logueo
+        return 'API Error ${error.response!.statusCode}: ${serverDetail}';
+      }
+      return 'Error de red: ${error.message}';
+    } else if (error is Exception) {
+      // Limpia el prefijo 'Exception: ' para excepciones de lógica
+      return error.toString().replaceFirst('Exception: ', '');
+    }
+    return defaultMsg;
+  }
+  // --------------------------------------------------------------------------------
+
   // 💡 FUNCIÓN CLAVE: Procesa la cola de sincronización
   Future<void> _processSyncQueue() async {
     final isConnected = await _connectivityService.checkConnection();
@@ -48,7 +76,6 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
             final newUser = await _apiService.createUser(data);
             // 🚨 Paso crucial para manejar IDs temporales
             if (item.localId != null) {
-              // REQUIERE IsarService.updateLocalUserWithRealId
               await _isarService.updateLocalUserWithRealId(
                 item.localId!,
                 newUser,
@@ -66,8 +93,10 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
           case SyncOperation.DELETE_USER:
             // Usamos el targetId extraído del endpoint
             await _apiService.deleteUser(targetId);
-            // La siguiente _syncLocalDatabase eliminará el dato obsoleto de Isar.
+            // Eliminamos de Isar ya que la API confirmó la eliminación
+            await _isarService.deleteUser(targetId);
             break;
+
           default:
             print('DEBUG SYNC: Operación desconocida: ${item.operation.name}');
             break;
@@ -79,15 +108,19 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
           'DEBUG SYNC: Operación ${item.operation.name} sincronizada exitosamente.',
         );
       } catch (e) {
-        // Si alguna operación falla (ej. servidor rechaza la data),
-        // detenemos la cola para no perder la orden de dependencia.
-        print(
-          'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
+        // 🚨 MANEJO DE ERROR CON UTILIDAD INTERNA (para logueo)
+        final errorMsg = _getApiErrorMessage(
+          e,
+          defaultMsg:
+              'Fallo al sincronizar ${item!.operation.name}. Deteniendo cola.',
         );
-        break;
+        print('❌ ERROR SYNC: $errorMsg');
+        break; // Romper el bucle y esperar una nueva conexión
       }
     }
   }
+
+  // --------------------------------------------------------------------------------
 
   // Lógica de limpieza y sincronización (sin cambios)
   Future<void> _syncLocalDatabase(List<User> onlineUsers) async {
@@ -100,6 +133,7 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
     for (final userId in staleUserIds) {
       await _isarService.deleteUser(userId);
     }
+    // Guardar los datos del API.
     await _isarService.saveUsers(onlineUsers);
   }
 
@@ -120,7 +154,9 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
 
       final onlineUsers = await _apiService.fetchAllUsers();
       await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
+      return onlineUsers
+          .where((u) => !u.isDeleted)
+          .toList(); // Aseguramos que solo retornamos activos
     } catch (e) {
       if (activeLocalUsers.isNotEmpty) return activeLocalUsers;
       throw Exception(
@@ -130,20 +166,18 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
   }
 
   // -------------------------------------------------------------------
-  // 💡 MÉTODOS PRIVADOS OFFLINE (Sin cambios, ya manejan el encolamiento)
+  // MÉTODOS PRIVADOS OFFLINE (Usando isPendingSync: true)
   // -------------------------------------------------------------------
   Future<void> _handleOfflineCreate(
     UserCreateLocal data,
     List<User> previousList,
   ) async {
-    // ⚠️ Validación crucial para el modo offline
     if (data.localId == null) {
       throw Exception(
         'Error interno: localId no fue generado para operación offline.',
       );
     }
 
-    // 1. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.CREATE_USER,
       endpoint: '/api/v1/users/',
@@ -152,9 +186,9 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
     );
     await _isarService.enqueueSyncItem(syncItem);
 
-    // 2. Actualización optimista (creación del usuario temporal)
+    // Creamos el usuario temporal con isPendingSync: true
     final tempUser = User(
-      id: data.localId!, // Usamos el ID temporal
+      id: data.localId!,
       username: data.username,
       roleId: data.roleId,
       roleName: data.roleName,
@@ -163,12 +197,11 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
       companyId: data.companyId,
       branchId: data.branchId,
       isDeleted: false,
+      isPendingSync: true, // 👈 Ahora el modelo User lo soporta
     );
     await _isarService.saveUsers([tempUser]);
 
-    // 3. Actualizar el estado de Riverpod
     state = AsyncValue.data([...previousList, tempUser]);
-
     print('DEBUG OFFLINE: Fallback a modo offline (Creación encolada).');
   }
 
@@ -178,44 +211,45 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
   ) async {
     final userDataMap = data.toJson();
 
-    // 1. Crear la lista actualizada y el usuario a guardar (Optimistic Update)
+    final userToSave = userList
+        .firstWhere((u) => u.id == data.id)
+        .copyWith(
+          username:
+              data.username ??
+              userList.firstWhere((u) => u.id == data.id).username,
+          roleName:
+              data.roleName ??
+              userList.firstWhere((u) => u.id == data.id).roleName,
+          roleId:
+              data.roleId ?? userList.firstWhere((u) => u.id == data.id).roleId,
+          isPendingSync: true, // 👈 Ahora el modelo User lo soporta
+        );
+
     final updatedList = userList.map((user) {
-      return user.id == data.id
-          ? user.copyWith(
-              username: data.username ?? user.username,
-              roleName: data.roleName ?? user.roleName,
-              roleId: data.roleId ?? user.roleId,
-            )
-          : user;
+      return user.id == data.id ? userToSave : user;
     }).toList();
 
-    final userToSave = updatedList.firstWhere((u) => u.id == data.id);
-
-    // 2. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.UPDATE_USER,
       endpoint: '/api/v1/users/${data.id}',
       payload: jsonEncode(userDataMap),
     );
     await _isarService.enqueueSyncItem(syncItem);
-
-    // 3. Guardar la actualización optimista en Isar
     await _isarService.saveUsers([userToSave]);
 
-    // 4. Actualizar el estado de Riverpod
     state = AsyncValue.data(updatedList);
-
     print('DEBUG OFFLINE: Fallback a modo offline (Edición encolada).');
   }
 
-  // --- MÉTODOS CRUD CORREGIDOS CON FALLBACK (Sin cambios en el cuerpo) ---
+  // -------------------------------------------------------------------
+  // MÉTODOS CRUD CON LOGUEO DE ERROR
+  // -------------------------------------------------------------------
 
   Future<void> createUser(UserCreateLocal data) async {
     final previousState = state;
     if (!state.hasValue) return;
 
     try {
-      // 1. RBAC: VALIDACIÓN DE CREACIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
           !_canCreateUserWithRole(currentUser.roleName, data.roleName)) {
@@ -224,7 +258,6 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
         );
       }
 
-      // 2. Intentar ONLINE
       final isConnected = await _connectivityService.checkConnection();
 
       if (!isConnected) {
@@ -233,16 +266,21 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
         final newUser = await _apiService.createUser(data.toJson());
         await _isarService.saveUsers([newUser]);
         state = AsyncValue.data([...previousState.value!, newUser]);
       } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
+        // 🚨 FALLBACK: Logueamos el error usando la utilidad y encolamos
+        final errorMsg = _getApiErrorMessage(
+          e,
+          defaultMsg: 'Error al conectar. Encolando creación...',
+        );
+        print('⚠️ FALLBACK CREATE: $errorMsg');
         await _handleOfflineCreate(data, previousState.value!);
       }
     } catch (e, st) {
-      throw Exception('Fallo al crear usuario: ${e.toString()}');
+      // Lanzar para que la UI use SnackbarUtils.showError(context, e)
+      throw Exception('Fallo al crear usuario: ${_getApiErrorMessage(e)}');
     }
   }
 
@@ -255,7 +293,6 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
       final originalUser = userList.firstWhere((u) => u.id == data.id);
       final targetRole = data.roleName ?? originalUser.roleName;
 
-      // 1. RBAC: VALIDACIÓN DE EDICIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
           !_canModifyTargetUserRole(currentUser.roleName, targetRole)) {
@@ -264,19 +301,16 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
         );
       }
 
-      // 2. Intentar ONLINE
       final isConnected = await _connectivityService.checkConnection();
 
       if (!isConnected) {
-        // Si no hay conexión de red, vamos directo al offline
         await _handleOfflineUpdate(data, userList);
         return;
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
         final userDataMap = data.toJson();
-        final updatedUser = await _apiService.updateUser(data.id, userDataMap);
+        final updatedUser = await _apiService.updateUser(data.id!, userDataMap);
         await _isarService.saveUsers([updatedUser]);
 
         final finalUpdatedList = userList.map((user) {
@@ -284,12 +318,18 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
         }).toList();
         state = AsyncValue.data(finalUpdatedList);
       } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
+        // 🚨 FALLBACK: Logueamos el error usando la utilidad y encolamos
+        final errorMsg = _getApiErrorMessage(
+          e,
+          defaultMsg: 'Error al conectar. Encolando edición...',
+        );
+        print('⚠️ FALLBACK EDIT: $errorMsg');
         await _handleOfflineUpdate(data, userList);
       }
     } catch (e, st) {
       state = previousState;
-      throw Exception('Fallo al editar usuario: ${e.toString()}');
+      // Lanzar para que la UI use SnackbarUtils.showError(context, e)
+      throw Exception('Fallo al editar usuario: ${_getApiErrorMessage(e)}');
     }
   }
 
@@ -318,7 +358,10 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
 
       if (!isConnected) {
         // OFFLINE: Marcar y encolar
-        final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
+        final userMarkedForDeletion = userToDelete.copyWith(
+          isDeleted: true,
+          isPendingSync: true,
+        );
         await _isarService.saveUsers([userMarkedForDeletion]);
 
         final syncItem = SyncQueueItem.create(
@@ -333,8 +376,17 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
           await _apiService.deleteUser(userId);
           await _isarService.deleteUser(userId);
         } catch (e) {
-          // 🚨 FALLBACK para DELETE: Marcar y encolar
-          final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
+          // 🚨 FALLBACK para DELETE: logueamos, marcamos y encolamos
+          final errorMsg = _getApiErrorMessage(
+            e,
+            defaultMsg: 'Error al conectar. Encolando eliminación...',
+          );
+          print('⚠️ FALLBACK DELETE: $errorMsg');
+
+          final userMarkedForDeletion = userToDelete.copyWith(
+            isDeleted: true,
+            isPendingSync: true,
+          );
           await _isarService.saveUsers([userMarkedForDeletion]);
 
           final syncItem = SyncQueueItem.create(
@@ -343,14 +395,12 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
             payload: '{}',
           );
           await _isarService.enqueueSyncItem(syncItem);
-          print(
-            'DEBUG OFFLINE: Fallback a modo offline (Eliminación encolada).',
-          );
         }
       }
     } catch (e, st) {
       state = previousState;
-      throw Exception('Fallo al eliminar usuario: ${e.toString()}');
+      // Lanzar para que la UI use SnackbarUtils.showError(context, e)
+      throw Exception('Fallo al eliminar usuario: ${_getApiErrorMessage(e)}');
     }
   }
 
@@ -362,7 +412,9 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
 
       final onlineUsers = await _apiService.fetchAllUsers();
       await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
+      return onlineUsers
+          .where((u) => !u.isDeleted)
+          .toList(); // Asegurar solo activos
     });
   }
 
