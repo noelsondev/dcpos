@@ -93,7 +93,7 @@ class AuthInterceptor extends Interceptor {
 }
 
 // ---------------------------------------------
-// CLASE API SERVICE (CORREGIDA)
+// CLASE API SERVICE
 // ---------------------------------------------
 
 class ApiService {
@@ -114,7 +114,7 @@ class ApiService {
         data: {'username': username, 'password': password},
       );
       if (response.statusCode == 200) {
-        return Token.fromJson(response.data);
+        return Token.fromJson(response.data as Map<String, dynamic>);
       }
       throw Exception('Login fallido con código: ${response.statusCode}');
     } on DioException catch (e) {
@@ -134,7 +134,7 @@ class ApiService {
         // El API requiere el Refresh Token en el header como Bearer
         options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
       );
-      return Token.fromJson(response.data);
+      return Token.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
       final errorMessage = e.response?.data?['detail'] ?? 'Fallo al refrescar.';
       throw Exception(errorMessage);
@@ -144,7 +144,7 @@ class ApiService {
   Future<User> fetchMe() async {
     try {
       final response = await dio.get('/auth/me');
-      return User.fromJson(response.data);
+      return User.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
       final errorMessage =
           e.response?.data?['detail'] ?? 'Error al obtener usuario.';
@@ -162,7 +162,10 @@ class ApiService {
       final List<dynamic> jsonList =
           (responseMap['roles'] as List<dynamic>?) ?? [];
 
-      return jsonList.map((json) => Role.fromJson(json)).toList();
+      // ✅ Corrección: Casteo explícito a Map<String, dynamic> para seguridad
+      return jsonList
+          .map((json) => Role.fromJson(json as Map<String, dynamic>))
+          .toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener roles: ${e.message}');
     }
@@ -178,7 +181,10 @@ class ApiService {
       final List<dynamic> jsonList =
           (responseMap['data'] as List<dynamic>?) ?? [];
 
-      return jsonList.map((json) => User.fromJson(json)).toList();
+      // ✅ Corrección: Casteo explícito a Map<String, dynamic> para seguridad
+      return jsonList
+          .map((json) => User.fromJson(json as Map<String, dynamic>))
+          .toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener usuarios: ${e.message}');
     }
@@ -188,7 +194,7 @@ class ApiService {
     try {
       // Usa la barra final: /users/
       final response = await dio.post('/users/', data: userData);
-      return User.fromJson(response.data);
+      return User.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
       final errorMessage =
           e.response?.data?['detail'] ?? 'Error desconocido al crear usuario.';
@@ -200,7 +206,7 @@ class ApiService {
     try {
       // Corrección para 404: Añadir la barra final.
       final response = await dio.patch('/users/$userId/', data: userData);
-      return User.fromJson(response.data);
+      return User.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
       final errorMessage =
           e.response?.data?['detail'] ??
@@ -228,10 +234,15 @@ class ApiService {
     try {
       final response = await dio.get('/platform/companies');
 
-      // Se asume que la respuesta es DIRECTAMENTE una List<dynamic>.
-      final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
+      // ✅ Corrección: Se utiliza chequeo de tipo seguro.
+      final List<dynamic> jsonList = (response.data is List<dynamic>)
+          ? (response.data as List<dynamic>)
+          : [];
 
-      return jsonList.map((json) => Company.fromJson(json)).toList();
+      // ✅ Corrección: Casteo explícito a Map<String, dynamic> para seguridad
+      return jsonList
+          .map((json) => Company.fromJson(json as Map<String, dynamic>))
+          .toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener compañías: ${e.message}');
     }
@@ -240,9 +251,8 @@ class ApiService {
   Future<Company> createCompany(Map<String, dynamic> data) async {
     try {
       final response = await dio.post('/platform/companies', data: data);
-      return Company.fromJson(response.data);
+      return Company.fromJson(response.data as Map<String, dynamic>);
     } on DioException catch (e) {
-      // 💡 CORRECCIÓN EN EL MANEJO DE ERRORES:
       if (e.response != null) {
         // Intentamos obtener el detalle del error del cuerpo de la respuesta
         final errorDetail = e.response?.data is Map
@@ -275,7 +285,7 @@ class ApiService {
       '/platform/companies/$companyId',
       data: data,
     );
-    return Company.fromJson(response.data);
+    return Company.fromJson(response.data as Map<String, dynamic>);
   }
 
   Future<void> deleteCompany(String companyId) async {
@@ -283,18 +293,24 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA BRANCH (NUEVOS)
+  // 💡 MÉTODOS PARA BRANCH
   // ----------------------------------------------------------------------
+  // 🟢 MÉTODO CORREGIDO PARA EVITAR ERROR DE CASteo
   Future<List<Branch>> fetchBranches(String companyId) async {
     try {
       final response = await dio.get('/platform/companies/$companyId/branches');
 
-      final responseMap = response.data as Map<String, dynamic>;
-      // Se asume la clave 'data' y maneja nulos.
-      final List<dynamic> jsonList =
-          (responseMap['data'] as List<dynamic>?) ?? [];
+      // ✅ CORRECCIÓN CLAVE:
+      // 1. Evita castear la respuesta (List) a Map. Se asume que el API devuelve la lista directamente.
+      // 2. Se utiliza chequeo de tipo seguro.
+      final List<dynamic> jsonList = (response.data is List<dynamic>)
+          ? (response.data as List<dynamic>)
+          : [];
 
-      return jsonList.map((json) => Branch.fromJson(json)).toList();
+      // 3. Casteo explícito a Map<String, dynamic> para seguridad al llamar fromJson.
+      return jsonList
+          .map((json) => Branch.fromJson(json as Map<String, dynamic>))
+          .toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener sucursales: ${e.message}');
     }
@@ -308,7 +324,7 @@ class ApiService {
       '/platform/companies/$companyId/branches',
       data: data,
     );
-    return Branch.fromJson(response.data);
+    return Branch.fromJson(response.data as Map<String, dynamic>);
   }
 
   Future<Branch> updateBranch(
@@ -320,7 +336,7 @@ class ApiService {
       '/platform/companies/$companyId/branches/$branchId',
       data: data,
     );
-    return Branch.fromJson(response.data);
+    return Branch.fromJson(response.data as Map<String, dynamic>);
   }
 
   Future<void> deleteBranch(String companyId, String branchId) async {

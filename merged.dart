@@ -1,3 +1,67 @@
+// ----- FILE: lib\main.dart -----
+// lib/main.dart
+
+import 'package:dcpos/screens/branches_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'providers/auth_provider.dart';
+import 'screens/home_screen.dart'; // Pantalla principal
+import 'screens/login_screen.dart'; // Pantalla de login
+import 'screens/companies_screen.dart';
+import 'screens/users_screen.dart'; // Asumiendo que existe
+
+void main() {
+  // Riverpod requiere que la aplicación esté envuelta en un ProviderScope
+  runApp(const ProviderScope(child: MyApp()));
+}
+
+class MyApp extends ConsumerWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 1. Observa el estado del proveedor de autenticación
+    final authState = ref.watch(authProvider);
+
+    return MaterialApp(
+      title: 'DCPOS Offline-First',
+      theme: ThemeData(primarySwatch: Colors.blue),
+
+      // 2. Lógica de navegación condicional
+      home: authState.when(
+        // Muestra un loader mientras se carga el estado inicial (chequeo en Isar)
+        loading: () =>
+            const Scaffold(body: Center(child: CircularProgressIndicator())),
+
+        // Si hay un error, volvemos a mostrar el Login (o manejar el error)
+        error: (e, st) => const LoginScreen(),
+
+        // Cuando los datos están disponibles
+        data: (user) {
+          if (user != null) {
+            // USUARIO LOGUEADO: Navega a Home
+            return const HomeScreen();
+          } else {
+            // Usuario NO logueado o después de Logout
+            return const LoginScreen();
+          }
+        },
+      ),
+
+      // Opcional: Definición de rutas nombradas si las necesita
+      routes: {
+        '/companies': (context) => const CompaniesScreen(),
+        '/users': (context) =>
+            const UsersScreen(), // Asumiendo que esta ruta existe
+        '/branches': (context) => const BranchesScreen(), // ⬅️ NUEVA RUTA
+      },
+    );
+  }
+}
+
+
+// ----- FILE: lib\models\branch.dart -----
 // lib/models/branch.dart
 
 import 'package:copy_with_extension/copy_with_extension.dart';
@@ -14,6 +78,10 @@ part 'branch.g.dart';
 @JsonSerializable(fieldRename: FieldRename.snake, explicitToJson: true)
 @Collection()
 class Branch {
+  // 💡 CORRECCIÓN CRÍTICA: Se añade @JsonKey(ignore: true) para evitar el error
+  // 'type Null is not a subtype of type num' al deserializar desde el API.
+  // Este campo es exclusivo de Isar y debe ser ignorado por JSON.
+  @JsonKey(ignore: true)
   Id isarId = Isar.autoIncrement;
 
   @Index(unique: true)
@@ -67,15 +135,15 @@ class BranchCreateLocal {
 }
 
 // ----------------------------------------------------------------------
-// 3. MODELO DE ACTUALIZACIÓN (Offline-First) - CORREGIDO
+// 3. MODELO DE ACTUALIZACIÓN (Offline-First)
 // ----------------------------------------------------------------------
-// 💡 CORRECCIÓN: createFactory: false
 @JsonSerializable(
   includeIfNull: false,
   explicitToJson: true,
-  createFactory: false,
+  createFactory: false, // Indica que debemos definir el factory manualmente
 )
 class BranchUpdateLocal {
+  // Los campos ignorados no se incluirán en el código generado de toApiJson()
   @JsonKey(ignore: true)
   final String id;
   @JsonKey(ignore: true)
@@ -85,16 +153,41 @@ class BranchUpdateLocal {
   final String? address;
 
   BranchUpdateLocal({
-    required this.id, // Ahora funciona correctamente
+    required this.id,
     required this.companyId,
     this.name,
     this.address,
   });
 
-  // Usado para la solicitud PATCH al API
-  Map<String, dynamic> toApiJson() => _$BranchUpdateLocalToJson(this);
+  // ✅ Factory manual para deserializar desde la cola local
+  factory BranchUpdateLocal.fromJson(Map<String, dynamic> json) {
+    return BranchUpdateLocal(
+      id: json['id'] as String,
+      companyId: json['companyId'] as String,
+      name: json['name'] as String?,
+      address: json['address'] as String?,
+    );
+  }
+
+  // Mantenemos toApiJson para el request PATCH
+  // Incluye solo name y address (excluyendo nulls por includeIfNull: false).
+  Map<String, dynamic> toApiJson() {
+    return _$BranchUpdateLocalToJson(this);
+  }
+
+  // ✅ Manual toJson para la cola (incluye id y companyId)
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'companyId': companyId,
+      if (name != null) 'name': name,
+      if (address != null) 'address': address,
+    };
+  }
 }
 
+
+// ----- FILE: lib\models\company.dart -----
 // lib/models/company.dart
 
 import 'package:copy_with_extension/copy_with_extension.dart';
@@ -108,7 +201,11 @@ part 'company.g.dart';
 // 1. MODELO PRINCIPAL (DB y API Fetch)
 // ----------------------------------------------------------------------
 @CopyWith()
-@JsonSerializable(fieldRename: FieldRename.snake, explicitToJson: true)
+@JsonSerializable(
+  fieldRename: FieldRename.snake,
+  explicitToJson: true,
+  anyMap: true,
+)
 @Collection()
 class Company {
   Id isarId = Isar.autoIncrement;
@@ -119,14 +216,26 @@ class Company {
   final String name;
   final String slug;
 
+  @JsonKey(name: 'created_at', required: false)
+  final String? createdAt;
+
   final bool isDeleted;
 
+  // ✅ CAMPO CLAVE: Usado solo localmente para el estado de sincronización.
+  @JsonKey(ignore: true)
+  final bool isSyncPending;
+
   Company({
+    this.isarId = Isar.autoIncrement,
     required this.id,
     required this.name,
     required this.slug,
+    this.createdAt,
     this.isDeleted = false,
+    this.isSyncPending = false, // Por defecto es false
   });
+
+  static String generateLocalId() => const Uuid().v4();
 
   factory Company.fromJson(Map<String, dynamic> json) =>
       _$CompanyFromJson(json);
@@ -145,12 +254,10 @@ class CompanyCreateLocal {
   CompanyCreateLocal({String? localId, required this.name, required this.slug})
     : localId = localId ?? const Uuid().v4();
 
-  // 💡 Usado para la solicitud al API (solo datos)
   Map<String, dynamic> toApiJson() {
     return {'name': name, 'slug': slug};
   }
 
-  // 💡 Usado para guardar en SyncQueueItem.payload (datos completos)
   Map<String, dynamic> toJson() => _$CompanyCreateLocalToJson(this);
 
   factory CompanyCreateLocal.fromJson(Map<String, dynamic> json) =>
@@ -158,12 +265,12 @@ class CompanyCreateLocal {
 }
 
 // ----------------------------------------------------------------------
-// 3. MODELO DE ACTUALIZACIÓN (Offline-First) - CORREGIDO
+// 3. MODELO DE ACTUALIZACIÓN (Offline-First)
 // ----------------------------------------------------------------------
 @JsonSerializable(
   includeIfNull: false,
   explicitToJson: true,
-  createFactory: false,
+  createFactory: false, // 🛑 Requiere fromJson y toJson manual
 )
 class CompanyUpdateLocal {
   @JsonKey(ignore: true)
@@ -174,10 +281,37 @@ class CompanyUpdateLocal {
 
   CompanyUpdateLocal({required this.id, this.name, this.slug});
 
-  // 💡 ESTE ES EL MÉTODO QUE DEBEMOS LLAMAR AHORA
-  Map<String, dynamic> toApiJson() => _$CompanyUpdateLocalToJson(this);
+  // ✅ CORRECCIÓN 1: Constructor de fábrica manual para la deserialización
+  // Es usado por SyncService para reconstruir el objeto desde el payload.
+  factory CompanyUpdateLocal.fromJson(Map<String, dynamic> json) {
+    return CompanyUpdateLocal(
+      id: json['id'] as String,
+      name: json['name'] as String?,
+      slug: json['slug'] as String?,
+    );
+  }
+
+  // Mantenemos toApiJson (para el request PATCH, con campos opcionales)
+  // Nota: Si usaras _$CompanyUpdateLocalToJson(this) necesitarías ejecutar
+  // el generador. Para evitar dependencia y asegurar que el ID no vaya en el body,
+  // creamos la versión API manualmente:
+  Map<String, dynamic> toApiJson() {
+    return {if (name != null) 'name': name, if (slug != null) 'slug': slug};
+  }
+
+  // ✅ CORRECCIÓN 2: Método toJson manual (para la cola de sincronización)
+  // Incluye el ID para que SyncService sepa qué registro actualizar.
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      if (name != null) 'name': name,
+      if (slug != null) 'slug': slug,
+    };
+  }
 }
 
+
+// ----- FILE: lib\models\role.dart -----
 // lib/models/role.dart
 
 import 'package:isar/isar.dart';
@@ -200,13 +334,19 @@ class Role {
   }
 }
 
-// lib/models/sync_queue_item.dart
 
+// ----- FILE: lib\models\sync_queue_item.dart -----
 import 'package:isar/isar.dart';
 import 'package:json_annotation/json_annotation.dart';
 
 part 'sync_queue_item.g.dart';
 
+// ----------------------------------------------------------------------
+// 1. ENUM DE OPERACIONES DE SINCRONIZACIÓN
+// ----------------------------------------------------------------------
+
+/// Define las operaciones CRUD que pueden ser encoladas para sincronización
+/// cuando el dispositivo está sin conexión.
 @JsonEnum(fieldRename: FieldRename.screamingSnake)
 enum SyncOperation {
   // Operaciones de Usuario
@@ -225,13 +365,17 @@ enum SyncOperation {
   DELETE_BRANCH,
 }
 
+// ----------------------------------------------------------------------
+// 2. MODELO DE COLA DE SINCRONIZACIÓN (ISAR)
+// ----------------------------------------------------------------------
+
 @JsonSerializable()
 @Collection()
 class SyncQueueItem {
   Id id = Isar.autoIncrement;
 
   @Enumerated(EnumType.name)
-  final SyncOperation operation;
+  final SyncOperation operation; // 👈 Aquí se usa la enumeración
 
   /// El endpoint REST al que se debe enviar el payload (ej: /api/v1/users/)
   final String endpoint;
@@ -245,6 +389,9 @@ class SyncQueueItem {
   /// Fecha de creación del ítem en la cola. Se usa para procesar los ítems en orden (FIFO).
   final DateTime createdAt;
 
+  /// Contador de reintentos.
+  final int? retryCount;
+
   // Constructor principal simple (usado por Isar y json_serializable/manual)
   SyncQueueItem({
     required this.operation,
@@ -252,6 +399,7 @@ class SyncQueueItem {
     required this.payload,
     this.localId,
     required this.createdAt,
+    this.retryCount = 0,
   });
 
   /// Fábrica auxiliar para crear el ítem con la hora actual (`DateTime.now()`) automáticamente.
@@ -260,6 +408,7 @@ class SyncQueueItem {
     required String endpoint,
     required String payload,
     String? localId,
+    int retryCount = 0,
   }) {
     return SyncQueueItem(
       operation: operation,
@@ -267,6 +416,7 @@ class SyncQueueItem {
       payload: payload,
       localId: localId,
       createdAt: DateTime.now(),
+      retryCount: retryCount,
     );
   }
 
@@ -276,6 +426,8 @@ class SyncQueueItem {
   Map<String, dynamic> toJson() => _$SyncQueueItemToJson(this);
 }
 
+
+// ----- FILE: lib\models\token.dart -----
 // lib/models/token.dart (Modificado)
 
 import 'package:json_annotation/json_annotation.dart';
@@ -307,6 +459,8 @@ class Token {
   Map<String, dynamic> toJson() => _$TokenToJson(this);
 }
 
+
+// ----- FILE: lib\models\user.dart -----
 // lib/models/user.dart
 
 import 'package:copy_with_extension/copy_with_extension.dart';
@@ -475,6 +629,8 @@ class UserUpdateLocal {
   Map<String, dynamic> toJson() => _$UserUpdateLocalToJson(this);
 }
 
+
+// ----- FILE: lib\providers\auth_provider.dart -----
 // lib/providers/auth_provider.dart
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -482,24 +638,18 @@ import '../models/token.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
-import '../services/sync_service.dart'; // 💡 Importar el servicio de sincronización
-
-// Proveedor de la base de datos Isar
-// final isarServiceProvider = Provider((ref) => IsarService());
-
-// Proveedor del ApiService
-// NOTA: Asumimos que apiServiceProvider ya está definido en otro lugar (ej. api_service.dart)
-// final apiServiceProvider = Provider((ref) => ApiService(ref));
+import '../services/sync_service.dart';
 
 // Proveedor del SyncService (Necesario para la sincronización post-login)
-final syncServiceProvider = Provider(
-  (ref) => SyncService(ref),
-); // 💡 Definir el proveedor del SyncService
+final syncServiceProvider = Provider((ref) => SyncService(ref));
 
 // Estado de Autenticación (StateNotifier para manejar estados de carga/error)
 class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
   final Ref _ref;
-  Token? _token; // Almacena el token JWT de forma privada
+  Token? _token;
+
+  // 💡 NUEVO GETTER: Permite acceder al User? de forma limpia (para CompaniesNotifier)
+  User? get user => state.value;
 
   // Getter para el Refresh Token (para el Interceptor)
   String? get refreshToken => _token?.refreshToken;
@@ -518,9 +668,7 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
     try {
       final user = await _ref.read(isarServiceProvider).getActiveUser();
 
-      // CLAVE: Chequeamos que exista el usuario Y que tenga un token de sesión
       if (user != null && user.accessToken != null) {
-        // Asignar el token de Isar a la variable de clase (para el Interceptor)
         _token = Token(
           accessToken: user.accessToken!,
           refreshToken: user.refreshToken,
@@ -532,10 +680,6 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
         print(
           'DEBUG INIT: Usuario ${user.username} cargado desde Isar (Offline). Redirigiendo a HomeScreen.',
         );
-
-        // 🚀 Nota: Aquí no llamamos a startSync, ya que _initialize puede correr
-        // con la app en segundo plano y sin conexión estable.
-        // La sincronización debe ser manejada por un listener de conectividad.
       } else {
         state = const AsyncValue.data(null);
         print(
@@ -543,7 +687,6 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
         );
       }
     } catch (e, st) {
-      // Si la DB Isar falla
       state = AsyncValue.error(
         'Error al inicializar la base de datos local: $e',
         st,
@@ -555,24 +698,16 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
 
   Future<void> login(String username, String password) async {
     state = const AsyncValue.loading();
-    // Asumiendo que apiServiceProvider está definido y es accesible
     final _apiService = _ref.read(apiServiceProvider);
     final _isarService = _ref.read(isarServiceProvider);
-    final _syncService = _ref.read(
-      syncServiceProvider,
-    ); // 💡 Obtener el SyncService
+    final _syncService = _ref.read(syncServiceProvider);
 
     try {
-      // 1. Llama a la API (Login)
       final tokenResult = await _apiService.login(username, password);
-
-      // CLAVE 1: ALMACENAR EL OBJETO TOKEN INMEDIATAMENTE
       _token = tokenResult;
 
-      // 2. Llama a la API para obtener el usuario
       final userResponse = await _apiService.fetchMe();
 
-      // CLAVE 2: Guardar el token junto con el usuario en Isar para persistencia
       final userToSave = userResponse.copyWith(
         accessToken: tokenResult.accessToken,
         refreshToken: tokenResult.refreshToken,
@@ -581,11 +716,8 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
       print('DEBUG LOGIN: refreshToken=${tokenResult.refreshToken}');
       await _isarService.saveUser(userToSave);
 
-      // 3. Éxito ONLINE
       state = AsyncValue.data(userToSave);
 
-      // 🚀 INICIAR SINCRONIZACIÓN DESPUÉS DEL LOGIN EXITOSO
-      // Ahora que estamos online y autenticados, vaciamos la cola.
       _syncService.startSync();
 
       print(
@@ -594,23 +726,20 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
     } catch (e, st) {
       print('DEBUG AUTH: Fallo catastrófico en Login: $e');
 
-      // 🚨 MANEJO DE OFFLINE LOGIN: Solo si el fallo es de CONEXIÓN
       if (e.toString().contains('DioException') ||
           e.toString().contains('SocketException')) {
         final isarUser = await _isarService.getActiveUser();
 
-        // CLAVE: Revisa si el usuario ingresado (username) coincide con el usuario guardado
         if (isarUser != null && isarUser.username == username) {
           print(
             'DEBUG AUTH: Fallo de red detectado. Autenticación exitosa en modo OFFLINE con Isar.',
           );
 
           state = AsyncValue.data(isarUser);
-          return; // Salir de la función con éxito (offline)
+          return;
         }
       }
 
-      // ... (Si no hay usuario guardado o las credenciales no coinciden/error no es de red)
       state = AsyncValue.error(e, st);
     }
   }
@@ -618,32 +747,22 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
   // ⚠️ Este método es llamado por el Interceptor cuando el token expira
   void updateToken(Token newToken) async {
     final _isarService = _ref.read(isarServiceProvider);
-    final _syncService = _ref.read(
-      syncServiceProvider,
-    ); // 💡 Obtener el SyncService
+    final _syncService = _ref.read(syncServiceProvider);
 
-    // 1. Actualizar el token de la clase (usado por el Interceptor)
     _token = newToken;
-
-    // 2. Obtener el usuario actual para actualizar el registro en Isar
     final currentUser = state.value;
 
     if (currentUser != null) {
-      // 3. Crear una copia del usuario con el NUEVO Access y Refresh Token
       final userWithNewToken = currentUser.copyWith(
         accessToken: newToken.accessToken,
         refreshToken: newToken.refreshToken,
       );
 
-      // 4. Guardar en Isar (sobrescribir el registro existente)
       await _isarService.saveUser(userWithNewToken);
     }
 
-    // 🚀 INICIAR SINCRONIZACIÓN DESPUÉS DE RENOVAR EL TOKEN CON ÉXITO
-    // Esto asegura que, si el token expiró y se renovó, la conexión está OK para sincronizar.
     _syncService.startSync();
 
-    // 5. Verificación por Log
     print('✅ DEBUG REFRESH: Token actualizado con éxito.');
     print(
       ' -> Nuevo Access Token (Inicio): ${newToken.accessToken.substring(0, 8)}...',
@@ -661,7 +780,6 @@ class AuthNotifier extends StateNotifier<AsyncValue<User?>> {
 
     _token = null;
 
-    // COMPROMISO: Borrar la DB para que el Hot Restart NO te loguee.
     await _isarService.cleanDB();
     print('DEBUG LOGOUT: Usuario y sesión eliminados de Isar (Hard Logout).');
 
@@ -674,16 +792,21 @@ final authProvider = StateNotifierProvider<AuthNotifier, AsyncValue<User?>>(
   (ref) => AuthNotifier(ref),
 );
 
+
+// ----- FILE: lib\providers\branches_provider.dart -----
 // lib/providers/branches_provider.dart
 
 import 'dart:convert';
 import 'package:dcpos/providers/companies_provider.dart';
+// ❌ ELIMINADA la importación ambigua/duplicada
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 import '../models/branch.dart';
 import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
+import '../services/sync_service.dart'; // ✅ Única importación del servicio
 
 // Este proveedor gestionará la lista de TODAS las sucursales, aunque la UI las filtre por compañía.
 
@@ -692,77 +815,11 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
+  SyncService get _syncService => ref.read(syncServiceProvider);
 
   // ----------------------------------------------------------------------
-  // LÓGICA DE SINCRONIZACIÓN Y COLA
+  // LÓGICA DE SINCRONIZACIÓN Y FETCH
   // ----------------------------------------------------------------------
-
-  Future<void> _processSyncQueue() async {
-    final isConnected = await _connectivityService.checkConnection();
-    if (!isConnected) return;
-
-    SyncQueueItem? item;
-    while ((item = await _isarService.getNextSyncItem()) != null) {
-      try {
-        final parts = item!.endpoint.split('/');
-        final targetId = parts.last;
-        // Asume que la Company ID es la penúltima parte si el endpoint es /.../company_id/branches/branch_id
-        final companyId = parts.length >= 7 ? parts[parts.length - 4] : '';
-        final data = jsonDecode(item.payload);
-
-        switch (item.operation) {
-          case SyncOperation.CREATE_BRANCH: // 💡 NUEVO
-            // El payload tiene la data, pero necesitamos la companyId para el API.
-            // Debemos extraer companyId del localId/payload/endpoint (el más fiable es el localId si se guardó)
-            final localBranchData = BranchCreateLocal.fromJson(data);
-            final newBranch = await _apiService.createBranch(
-              localBranchData.companyId,
-              localBranchData.toJson(),
-            );
-
-            if (item.localId != null) {
-              await _isarService.updateLocalBranchWithRealId(
-                item.localId!,
-                newBranch,
-              );
-            }
-            break;
-
-          case SyncOperation.UPDATE_BRANCH: // 💡 NUEVO
-            await _apiService.updateBranch(targetId, data);
-            break;
-
-          case SyncOperation.DELETE_BRANCH: // 💡 NUEVO
-            // El targetId es el branchId. Necesitamos companyId para el API.
-            if (companyId.isEmpty)
-              throw Exception(
-                'Company ID no encontrada en el endpoint para DELETE_BRANCH.',
-              );
-            await _apiService.deleteBranch(companyId, targetId);
-            await _isarService.deleteBranch(
-              targetId,
-            ); // Limpieza final de local DB
-            break;
-
-          // Omitir operaciones de Users y Companies
-          default:
-            print(
-              'DEBUG SYNC: Operación no manejada por BranchesNotifier: ${item.operation.name}',
-            );
-            // Si no es una operación de Branch, la volvemos a encolar y salimos
-            await _isarService.enqueueSyncItem(item);
-            return;
-        }
-        await _isarService.dequeueSyncItem(item.id);
-      } catch (e) {
-        print(
-          'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
-        );
-        break;
-      }
-    }
-  }
-
   Future<void> _syncLocalDatabase(List<Branch> onlineBranches) async {
     final localBranches = await _isarService.getAllBranches();
     final Set<String> onlineIds = onlineBranches.map((b) => b.id).toSet();
@@ -790,17 +847,14 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     }
 
     try {
-      await _processSyncQueue(); // 🛑 Sincronizar cambios locales antes de obtener
+      // 🛑 Forzar la sincronización antes de un fetch masivo.
+      _syncService.startSync();
 
-      // Nota: El API no tiene un endpoint para 'todas las branches'
-      // Asumimos que podemos obtener todas las ramas de todas las compañías que el usuario ve
-      // Para simplificar, asumiremos que si el usuario tiene permiso, el API lo devolverá
-      // con un fetchAllBranches si existe. Como no existe, tenemos que hacerlo por Company.
-
-      // Para este ejemplo, simplificaremos asumiendo que el usuario está asociado a una o más compañías:
+      // Obtener todas las ramas de todas las compañías que el usuario ve
       final companies = await ref.read(companiesProvider.future);
       final List<Branch> allOnlineBranches = [];
 
+      // 💡 Por cada compañía, pedir sus ramas (asumiendo que el API lo permite)
       for (final company in companies) {
         final branches = await _apiService.fetchBranches(company.id);
         allOnlineBranches.addAll(branches);
@@ -808,31 +862,170 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
 
       await _syncLocalDatabase(allOnlineBranches);
       return allOnlineBranches;
+    } on DioException catch (e) {
+      if (localBranches.isNotEmpty) {
+        return localBranches;
+      }
+      throw Exception('Fallo al cargar sucursales online: ${e.message}');
     } catch (e) {
       if (localBranches.isNotEmpty) return localBranches;
-      throw Exception(
-        'Fallo al cargar sucursales online y no hay datos offline: $e',
-      );
+      throw Exception('Fallo al cargar sucursales: $e');
     }
   }
 
   // ----------------------------------------------------------------------
-  // CRUD CON FALLBACK OFFLINE
+  // CRUD CON FALLBACK OFFLINE (Implementación Completa)
   // ----------------------------------------------------------------------
 
   Future<void> createBranch(BranchCreateLocal data) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    state = const AsyncValue.loading();
+    final localId = data.localId!;
+
+    // 1. Optimistic Update (Crear Branch con localId)
+    final tempBranch = Branch(
+      id: localId,
+      companyId: data.companyId,
+      name: data.name,
+      address: data.address,
+    );
+    final currentList = state.value ?? [];
+    await _isarService.saveBranches([tempBranch]);
+    final newList = [...currentList.where((b) => b.id != localId), tempBranch];
+    state = AsyncValue.data(newList);
+    print('DEBUG OFFLINE: Sucursal creada localmente y encolada.');
+
+    try {
+      // 2. Intentar Online
+      final newBranch = await _apiService.createBranch(
+        data.companyId,
+        data.toApiJson(),
+      );
+
+      // 3. Éxito: Actualizar el registro en Isar con el ID real
+      await _isarService.updateLocalBranchWithRealId(localId, newBranch);
+
+      // 4. Actualizar estado
+      // ✅ CORRECCIÓN: Tipado explícito <Branch>
+      final updatedList = newList.map<Branch>((b) {
+        return b.id == localId ? newBranch : b;
+      }).toList();
+      state = AsyncValue.data(updatedList);
+      print('✅ ONLINE: Sucursal creada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 5. Fallback Offline: Encolar la operación
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        // ✅ CORRECCIÓN: Uso de argumentos nombrados
+        final syncItem = SyncQueueItem.create(
+          operation: SyncOperation.CREATE_BRANCH,
+          endpoint: '/api/v1/platform/companies/${data.companyId}/branches',
+          payload: jsonEncode(data.toJson()),
+          localId: localId,
+        );
+        await _isarService.enqueueSyncItem(syncItem);
+        // Mantener el estado optimistic update
+      } else {
+        // Error 5xx o de red: Se mantendrá en el estado local temporal.
+        rethrow;
+      }
+    }
   }
 
   Future<void> updateBranch(BranchUpdateLocal data) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    // 1. Optimistic Update
+    final currentList = state.value ?? [];
+    final oldBranch = currentList.firstWhere((b) => b.id == data.id);
+
+    final branchToUpdateLocal = oldBranch.copyWith(
+      name: data.name ?? oldBranch.name,
+      address: data.address ?? oldBranch.address,
+    );
+
+    await _isarService.saveBranches([branchToUpdateLocal]);
+    final newList = currentList.map((b) {
+      return b.id == data.id ? branchToUpdateLocal : b;
+    }).toList();
+    state = AsyncValue.data(newList);
+    print('DEBUG OFFLINE: Sucursal actualizada localmente y encolada.');
+
+    try {
+      // 2. Intentar Online
+      final updatedBranch = await _apiService.updateBranch(
+        data.companyId,
+        data.id,
+        data.toApiJson(),
+      );
+
+      // 3. Éxito: Actualizar en Isar
+      await _isarService.saveBranches([updatedBranch]);
+
+      // 4. Actualizar estado
+      final updatedList = newList.map((b) {
+        return b.id == data.id ? updatedBranch : b;
+      }).toList();
+      state = AsyncValue.data(updatedList);
+      print('✅ ONLINE: Sucursal actualizada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 5. Fallback Offline: Encolar la operación
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        // Uso de argumentos nombrados
+        final syncItem = SyncQueueItem.create(
+          operation: SyncOperation.UPDATE_BRANCH,
+          endpoint:
+              '/api/v1/platform/companies/${data.companyId}/branches/${data.id}',
+          payload: jsonEncode(data.toJson()),
+        );
+        await _isarService.enqueueSyncItem(syncItem);
+        // Mantener el estado optimistic update
+      } else {
+        rethrow;
+      }
+    }
   }
 
   Future<void> deleteBranch(String companyId, String branchId) async {
-    // Lógica similar a Company: Optimistic Update, Try Online, Fallback Offline
-    // ... (Implementación completa)
+    // 1. Optimistic Update
+    final currentList = state.value ?? [];
+    final branchToDelete = currentList.firstWhere((b) => b.id == branchId);
+
+    // Actualizar lista de UI (quitarla visualmente)
+    final newList = currentList.where((b) => b.id != branchId).toList();
+    state = AsyncValue.data(newList);
+
+    try {
+      // 2. Intentar Online
+      await _apiService.deleteBranch(companyId, branchId);
+
+      // 3. Éxito: Eliminar finalmente de Isar
+      await _isarService.deleteBranch(branchId);
+      print('✅ ONLINE: Sucursal eliminada y sincronizada exitosamente.');
+    } on DioException catch (e) {
+      // 4. Fallback Offline: Guardar en Isar como 'isDeleted: true' y encolar
+      if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
+        await _handleOfflineDelete(companyId, branchId, branchToDelete);
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  // Función auxiliar para el manejo de la eliminación offline
+  Future<void> _handleOfflineDelete(
+    String companyId,
+    String branchId,
+    Branch branchToDelete,
+  ) async {
+    // Marcar como eliminado en Isar y guardar.
+    final branchMarkedForDeletion = branchToDelete.copyWith(isDeleted: true);
+    await _isarService.saveBranches([branchMarkedForDeletion]);
+
+    // Encolar la operación de eliminación
+    final syncItem = SyncQueueItem.create(
+      operation: SyncOperation.DELETE_BRANCH,
+      endpoint: '/api/v1/platform/companies/$companyId/branches/$branchId',
+      payload: '{}',
+    );
+    await _isarService.enqueueSyncItem(syncItem);
+    print('DEBUG OFFLINE: Sucursal marcada para eliminación y encolada.');
   }
 }
 
@@ -842,6 +1035,8 @@ final branchesProvider = AsyncNotifierProvider<BranchesNotifier, List<Branch>>(
   },
 );
 
+
+// ----- FILE: lib\providers\companies_provider.dart -----
 // lib/providers/companies_provider.dart
 
 import 'dart:convert';
@@ -851,17 +1046,28 @@ import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
-
-// Definición de proveedores de servicio (asumida)
-// final apiServiceProvider = Provider((ref) => ApiService());
-// final isarServiceProvider = Provider((ref) => IsarService());
-// final connectivityServiceProvider = Provider((ref) => ConnectivityService());
+import '../providers/auth_provider.dart';
+import '../models/user.dart';
 
 class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   ApiService get _apiService => ref.read(apiServiceProvider);
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
+
+  // 💡 Accede al User? a través del getter 'user' del AuthNotifier
+  User? get _currentUser => ref.read(authProvider.notifier).user;
+
+  // ----------------------------------------------------------------------
+  // AYUDA: Verifica si el usuario tiene el rol 'global_admin'
+  // ----------------------------------------------------------------------
+  bool _isGlobalAdmin() {
+    final user = _currentUser;
+    if (user == null) return false;
+
+    // ✅ CORRECCIÓN SOLICITADA: Usamos roleName directamente
+    return user.roleName == 'global_admin';
+  }
 
   // ----------------------------------------------------------------------
   // LÓGICA DE SINCRONIZACIÓN Y COLA
@@ -878,7 +1084,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
         final data = jsonDecode(item.payload);
 
         switch (item.operation) {
-          case SyncOperation.CREATE_COMPANY: // 💡 NUEVO
+          case SyncOperation.CREATE_COMPANY:
             final newCompany = await _apiService.createCompany(data);
             if (item.localId != null) {
               await _isarService.updateLocalCompanyWithRealId(
@@ -888,23 +1094,19 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
             }
             break;
 
-          case SyncOperation.UPDATE_COMPANY: // 💡 NUEVO
+          case SyncOperation.UPDATE_COMPANY:
             await _apiService.updateCompany(targetId, data);
             break;
 
-          case SyncOperation.DELETE_COMPANY: // 💡 NUEVO
+          case SyncOperation.DELETE_COMPANY:
             await _apiService.deleteCompany(targetId);
-            await _isarService.deleteCompany(
-              targetId,
-            ); // Limpieza final de local DB
+            await _isarService.deleteCompany(targetId);
             break;
 
-          // Omitir operaciones de Users y Branches
           default:
             print(
               'DEBUG SYNC: Operación no manejada por CompaniesNotifier: ${item.operation.name}',
             );
-            // Si no es una operación de Company, la volvemos a encolar y salimos
             await _isarService.enqueueSyncItem(item);
             return;
         }
@@ -922,7 +1124,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     final localCompanies = await _isarService.getAllCompanies();
     final Set<String> onlineIds = onlineCompanies.map((c) => c.id).toSet();
 
-    // Limpieza de compañías obsoletas
     final List<String> staleIds = localCompanies
         .where((local) => !onlineIds.contains(local.id))
         .map((local) => local.id)
@@ -946,7 +1147,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }
 
     try {
-      await _processSyncQueue(); // 🛑 Sincronizar cambios locales antes de obtener
+      await _processSyncQueue();
       final onlineCompanies = await _apiService.fetchCompanies();
       await _syncLocalDatabase(onlineCompanies);
       return onlineCompanies;
@@ -963,10 +1164,18 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
   // ----------------------------------------------------------------------
 
   Future<void> createCompany(CompanyCreateLocal data) async {
+    // 💡 1. VERIFICACIÓN DE PERMISOS: Bloquear el encolado y la actualización optimista.
+    if (!_isGlobalAdmin()) {
+      print(
+        'ERROR PERMISOS: Intento de CREATE_COMPANY denegado localmente (No Global Admin).',
+      );
+      throw Exception("Acceso denegado. Se requiere rol 'global_admin'.");
+    }
+
     final previousState = state;
     if (!state.hasValue) return;
 
-    // 1. Actualización optimista temporal
+    // 2. Actualización optimista temporal (solo si pasó la verificación)
     final tempCompany = Company(
       id: data.localId!,
       name: data.name,
@@ -982,7 +1191,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
           final newCompany = await _apiService.createCompany(data.toJson());
           await _isarService.saveCompanies([newCompany]);
 
-          // Reemplazar la temporal con la real en el estado de Riverpod
           final updatedList = previousState.value!
               .where((c) => c.id != data.localId)
               .toList();
@@ -1006,7 +1214,7 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     Company tempCompany,
   ) async {
     final syncItem = SyncQueueItem.create(
-      operation: SyncOperation.CREATE_COMPANY, // 💡 NUEVO
+      operation: SyncOperation.CREATE_COMPANY,
       endpoint: '/api/v1/platform/companies',
       payload: jsonEncode(data.toJson()),
       localId: data.localId!,
@@ -1016,12 +1224,14 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     print('DEBUG OFFLINE: Compañía creada y encolada.');
   }
 
+  // ... el resto de la clase updateCompany y deleteCompany es igual ...
+
   Future<void> updateCompany(CompanyUpdateLocal data) async {
     final previousState = state;
     if (!state.hasValue) return;
+
     final currentList = previousState.value!;
 
-    // 1. Actualización optimista local (Crea la versión optimista)
     final updatedList = currentList.map((company) {
       return company.id == data.id
           ? company.copyWith(
@@ -1032,34 +1242,22 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }).toList();
 
     state = AsyncValue.data(updatedList);
-
-    // 💡 DEFINICIÓN CRUCIAL: Aquí se define 'companyToSave'
     final companyToSave = updatedList.firstWhere((c) => c.id == data.id);
 
     try {
       final isConnected = await _connectivityService.checkConnection();
       if (isConnected) {
         try {
-          // ONLINE
-          // Usamos toApiJson() para enviar solo los campos modificados
           final updatedCompany = await _apiService.updateCompany(
             data.id,
             data.toApiJson(),
           );
           await _isarService.saveCompanies([updatedCompany]);
         } catch (e) {
-          // FALLBACK OFFLINE
-          await _handleOfflineUpdate(
-            data,
-            companyToSave,
-          ); // Se pasa como argumento
+          await _handleOfflineUpdate(data, companyToSave);
         }
       } else {
-        // OFFLINE DIRECTO
-        await _handleOfflineUpdate(
-          data,
-          companyToSave,
-        ); // Se pasa como argumento
+        await _handleOfflineUpdate(data, companyToSave);
       }
     } catch (e) {
       state = previousState;
@@ -1067,26 +1265,18 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // FUNCIÓN AUXILIAR DE MANEJO OFFLINE
-  // ----------------------------------------------------------------------
-
   Future<void> _handleOfflineUpdate(
     CompanyUpdateLocal data,
-    Company companyToSave, // 💡 DEFINICIÓN COMO PARÁMETRO
+    Company companyToSave,
   ) async {
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.UPDATE_COMPANY,
       endpoint: '/api/v1/platform/companies/${data.id}',
-      payload: jsonEncode(
-        data.toApiJson(),
-      ), // toApiJson() es el que tiene los datos cambiados
+      payload: jsonEncode(data.toApiJson()),
       localId: data.id,
     );
     await _isarService.enqueueSyncItem(syncItem);
-    await _isarService.saveCompanies([
-      companyToSave,
-    ]); // Usamos companyToSave aquí
+    await _isarService.saveCompanies([companyToSave]);
     print('DEBUG OFFLINE: Compañía actualizada y encolada.');
   }
 
@@ -1094,7 +1284,6 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     final previousState = state;
     if (!state.hasValue) return;
 
-    // 1. Optimistic Update: Eliminar del estado de Riverpod
     final companyToDelete = previousState.value!.firstWhere(
       (c) => c.id == companyId,
     );
@@ -1107,15 +1296,12 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
       final isConnected = await _connectivityService.checkConnection();
       if (isConnected) {
         try {
-          // ONLINE
           await _apiService.deleteCompany(companyId);
           await _isarService.deleteCompany(companyId);
         } catch (e) {
-          // FALLBACK OFFLINE
           await _handleOfflineDelete(companyId, companyToDelete);
         }
       } else {
-        // OFFLINE DIRECTO
         await _handleOfflineDelete(companyId, companyToDelete);
       }
     } catch (e) {
@@ -1128,12 +1314,11 @@ class CompaniesNotifier extends AsyncNotifier<List<Company>> {
     String companyId,
     Company companyToDelete,
   ) async {
-    // Marcar como eliminada en Isar y encolar
     final companyMarkedForDeletion = companyToDelete.copyWith(isDeleted: true);
     await _isarService.saveCompanies([companyMarkedForDeletion]);
 
     final syncItem = SyncQueueItem.create(
-      operation: SyncOperation.DELETE_COMPANY, // 💡 NUEVO
+      operation: SyncOperation.DELETE_COMPANY,
       endpoint: '/api/v1/platform/companies/$companyId',
       payload: '{}',
     );
@@ -1147,6 +1332,8 @@ final companiesProvider =
       return CompaniesNotifier();
     });
 
+
+// ----- FILE: lib\providers\roles_provider.dart -----
 // lib/providers/roles_provider.dart
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -1212,6 +1399,8 @@ final rolesMapProvider = Provider<Map<String, Role>>((ref) {
   );
 });
 
+
+// ----- FILE: lib\providers\users_provider.dart -----
 // lib/providers/users_provider.dart
 
 import 'dart:convert';
@@ -1611,13 +1800,563 @@ final usersProvider = AsyncNotifierProvider<UsersNotifier, List<User>>(() {
   return UsersNotifier();
 });
 
-// lib/screens/home_screen.dart
+
+// ----- FILE: lib\screens\branches_screen.dart -----
+// lib/screens/branches_screen.dart
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
+
+import '../models/branch.dart';
+import '../models/company.dart'; // Asegúrate de tener este modelo
+import '../providers/branches_provider.dart';
+import '../providers/companies_provider.dart';
+
+// Generador de UUID para IDs locales temporales
+const _uuid = Uuid();
+
+class BranchesScreen extends ConsumerWidget {
+  static const routeName = '/branches';
+
+  // ID de la compañía que se quiere ver, pasado desde CompaniesScreen.
+  final String? selectedCompanyId;
+
+  const BranchesScreen({super.key, this.selectedCompanyId});
+
+  // Función auxiliar para obtener el ID de la compañía seleccionada o la primera disponible.
+  String? _getCompanyIdToFilter(List<Company>? companies) {
+    if (companies == null || companies.isEmpty) return null;
+
+    // Encuentra la compañía pasada por argumento o usa la primera.
+    final selectedCompany = companies.firstWhere(
+      (c) => c.id == selectedCompanyId,
+      orElse: () => companies.first,
+    );
+    return selectedCompany.id;
+  }
+
+  // 🚀 FUNCIÓN PARA FORZAR LA RECARGA Y SINCRONIZACIÓN
+  void _reloadBranches(WidgetRef ref) {
+    // Invalida el proveedor, forzando la recarga de la base de datos local
+    // y la sincronización con la API (según la implementación de branchesProvider).
+    ref.invalidate(branchesProvider);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final companiesAsync = ref.watch(companiesProvider);
+    final branchesAsync = ref.watch(branchesProvider);
+
+    // Calcular el ID fuera del bloque 'when' para que sea accesible al FAB
+    final fabCompanyId = _getCompanyIdToFilter(companiesAsync.value);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('🏢 Gestión de Sucursales'),
+        actions: [
+          // 💡 BOTÓN DE REFRESH AGREGADO
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _reloadBranches(ref),
+            tooltip: 'Recargar y sincronizar sucursales',
+          ),
+        ],
+      ),
+      body: companiesAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (err, stack) =>
+            Center(child: Text('Error al cargar compañías: $err')),
+        data: (companies) {
+          if (companies.isEmpty) {
+            return const Center(
+              child: Text(
+                'No hay compañías disponibles para gestionar sucursales.',
+              ),
+            );
+          }
+
+          final companyIdToFilter = fabCompanyId!;
+          final selectedCompany = companies.firstWhere(
+            (c) => c.id == companyIdToFilter,
+          );
+
+          return Column(
+            children: [
+              // Indicador de Compañía Seleccionada
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  'Sucursales de: ${selectedCompany.name}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Expanded(
+                // Lista de Sucursales
+                child: branchesAsync.when(
+                  loading: () =>
+                      const Center(child: CircularProgressIndicator()),
+                  error: (err, stack) =>
+                      Center(child: Text('Error al cargar sucursales: $err')),
+                  data: (allBranches) {
+                    // 💡 Filtra las sucursales por el ID de la compañía
+                    final filteredBranches = allBranches
+                        .where((b) => b.companyId == companyIdToFilter)
+                        .toList();
+
+                    if (filteredBranches.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'No hay sucursales registradas para esta compañía.',
+                        ),
+                      );
+                    }
+
+                    return ListView.builder(
+                      itemCount: filteredBranches.length,
+                      itemBuilder: (context, index) {
+                        final branch = filteredBranches[index];
+                        final isMarkedForDeletion = branch.isDeleted;
+
+                        return ListTile(
+                          tileColor: isMarkedForDeletion
+                              ? Colors.red.shade50
+                              : null,
+                          title: Text(
+                            branch.name,
+                            style: TextStyle(
+                              decoration: isMarkedForDeletion
+                                  ? TextDecoration.lineThrough
+                                  : null,
+                              fontStyle: isMarkedForDeletion
+                                  ? FontStyle.italic
+                                  : null,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'ID: ${branch.id.length > 8 ? '${branch.id.substring(0, 8)}...' : branch.id} | Dirección: ${branch.address ?? 'Sin dirección'}',
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Estado de sincronización (lógica de placeholder)
+                              if (branch.id.length > 10 &&
+                                  !branch.id.startsWith(RegExp(r'[a-f0-9]{8}')))
+                                const Tooltip(
+                                  message:
+                                      'Pendiente de sincronización (ID Local)',
+                                  child: Icon(
+                                    Icons.cloud_off,
+                                    color: Colors.orange,
+                                    size: 20,
+                                  ),
+                                ),
+                              const SizedBox(width: 8),
+
+                              // Botón de Eliminación
+                              IconButton(
+                                icon: Icon(
+                                  isMarkedForDeletion
+                                      ? Icons.delete_forever_rounded
+                                      : Icons.delete,
+                                  color: isMarkedForDeletion
+                                      ? Colors.red
+                                      : null,
+                                ),
+                                onPressed: isMarkedForDeletion
+                                    ? null
+                                    : () => _confirmDelete(
+                                        context,
+                                        ref,
+                                        companyIdToFilter,
+                                        branch.id,
+                                      ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+      // El FAB usa fabCompanyId, que está disponible en este scope.
+      floatingActionButton: fabCompanyId != null
+          ? FloatingActionButton(
+              onPressed: () => _showCreateDialog(context, ref, fabCompanyId),
+              child: const Icon(Icons.add),
+            )
+          : null,
+    );
+  }
+
+  // Diálogo y funciones auxiliares
+  void _showCreateDialog(
+    BuildContext context,
+    WidgetRef ref,
+    String companyId,
+  ) {
+    final nameController = TextEditingController();
+    final addressController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Crear Nueva Sucursal'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(labelText: 'Nombre *'),
+            ),
+            TextField(
+              controller: addressController,
+              decoration: const InputDecoration(labelText: 'Dirección'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (nameController.text.isEmpty) return;
+              final data = BranchCreateLocal(
+                companyId: companyId,
+                name: nameController.text,
+                address: addressController.text.isEmpty
+                    ? null
+                    : addressController.text,
+              );
+
+              ref.read(branchesProvider.notifier).createBranch(data);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Crear'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(
+    BuildContext context,
+    WidgetRef ref,
+    String companyId,
+    String branchId,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eliminar Sucursal'),
+        content: const Text(
+          '¿Está seguro de que desea eliminar esta sucursal? La operación se encolará si está offline.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref
+                  .read(branchesProvider.notifier)
+                  .deleteBranch(companyId, branchId);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+// ----- FILE: lib\screens\companies_screen.dart -----
+//lib/screens/companies_screen.dart
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../providers/companies_provider.dart';
+import 'company_form_screen.dart';
+import 'branches_screen.dart'; // 💡 CORREGIDO: Importación de BranchesScreen
+
+class CompaniesScreen extends ConsumerWidget {
+  const CompaniesScreen({super.key});
+
+  // Función para forzar la recarga de datos
+  void _reloadCompanies(WidgetRef ref) {
+    // 🚀 Llamada para invalidar y reconstruir el AsyncNotifier
+    ref.invalidate(companiesProvider);
+    // Opcional: ref.read(companiesProvider.notifier).build();
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final companiesAsyncValue = ref.watch(companiesProvider);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Gestión de Compañías'),
+        actions: [
+          // 🚀 BOTÓN DE RECARGA AGREGADO A LA APPBAR
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _reloadCompanies(ref),
+            tooltip: 'Recargar datos y sincronizar',
+          ),
+        ],
+      ),
+      // --- Botón Flotante para Crear ---
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (context) => const CompanyFormScreen()),
+          );
+        },
+        child: const Icon(Icons.add),
+      ),
+      body: companiesAsyncValue.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (err, stack) => Center(
+          child: Text(
+            'Error al cargar: ${err.toString().replaceAll('Exception: ', '')}',
+            style: const TextStyle(color: Colors.red),
+          ),
+        ),
+        data: (companies) {
+          if (companies.isEmpty) {
+            return const Center(child: Text('Aún no hay compañías creadas.'));
+          }
+
+          // --- Listado de Compañías ---
+          return ListView.builder(
+            itemCount: companies.length,
+            itemBuilder: (context, index) {
+              final company = companies[index];
+
+              // 💡 Acción Principal: Navegar a la gestión de Sucursales
+              return ListTile(
+                title: Text(company.name),
+                subtitle: Text('Slug: ${company.slug}'),
+                onTap: () {
+                  // ✅ CORREGIDO: Navegar a BranchesScreen, pasando el company.id
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          BranchesScreen(selectedCompanyId: company.id),
+                    ),
+                  );
+                },
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Botón de Edición
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.blue),
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                CompanyFormScreen(companyToEdit: company),
+                          ),
+                        );
+                      },
+                    ),
+                    // Botón de Eliminación (Lógica de borrado en el Notifier)
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        ref
+                            .read(companiesProvider.notifier)
+                            .deleteCompany(company.id);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+
+// ----- FILE: lib\screens\company_form_screen.dart -----
+//lib/screens/company_form_screen.dart (Corregido) 🛠️
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/company.dart';
+import '../providers/companies_provider.dart';
+
+class CompanyFormScreen extends ConsumerStatefulWidget {
+  final Company? companyToEdit;
+
+  const CompanyFormScreen({super.key, this.companyToEdit});
+
+  @override
+  ConsumerState<CompanyFormScreen> createState() => _CompanyFormScreenState();
+}
+
+class _CompanyFormScreenState extends ConsumerState<CompanyFormScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _slugController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.companyToEdit != null) {
+      final company = widget.companyToEdit!;
+      _nameController.text = company.name;
+      _slugController.text = company.slug;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _slugController.dispose();
+    super.dispose();
+  }
+
+  void _submitForm() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+    final companiesNotifier = ref.read(companiesProvider.notifier);
+
+    try {
+      if (widget.companyToEdit == null) {
+        // --- CREACIÓN (Offline-First) ---
+        final newCompany = CompanyCreateLocal(
+          name: _nameController.text,
+          slug: _slugController.text,
+        );
+        await companiesNotifier.createCompany(newCompany);
+      } else {
+        // --- EDICIÓN (Offline-First) ---
+        final updatedCompany = CompanyUpdateLocal(
+          id: widget.companyToEdit!.id,
+          name: _nameController.text,
+          slug: _slugController.text,
+        );
+        // 🚀 CORRECCIÓN APLICADA: Llamada a updateCompany
+        await companiesNotifier.updateCompany(updatedCompany);
+      }
+
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      if (mounted) {
+        final errorMessage = e.toString().replaceAll('Exception: ', '');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $errorMessage'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.companyToEdit == null
+              ? 'Crear Compañía'
+              : 'Editar Compañía: ${widget.companyToEdit!.name}',
+        ),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // --- Campo Nombre ---
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Nombre de la Compañía',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Introduce el nombre.';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+
+              // --- Campo Slug ---
+              TextFormField(
+                controller: _slugController,
+                decoration: const InputDecoration(
+                  labelText: 'Slug (Identificador único, ej: miempresa)',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Introduce un slug.';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 30),
+
+              // --- Botón de Guardar ---
+              ElevatedButton(
+                onPressed: _isLoading ? null : _submitForm,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                ),
+                child: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : Text(
+                        widget.companyToEdit == null
+                            ? 'Crear Compañía'
+                            : 'Guardar Cambios',
+                        style: const TextStyle(fontSize: 18),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+// ----- FILE: lib\screens\home_screen.dart -----
+// lib/screens/home_screen.dart
+
+import 'package:dcpos/screens/branches_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
-import 'users_screen.dart'; // 💡 IMPORTANTE: Importar la nueva pantalla de Usuarios
+import 'users_screen.dart';
+import 'companies_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -1702,12 +2441,39 @@ class HomeScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 20),
 
-            // 2. BOTÓN PARA NAVEGAR A GESTIÓN DE USUARIOS
+            // 2. BOTÓN PARA NAVEGAR A GESTIÓN DE COMPAÑÍAS 🏢
+            ElevatedButton.icon(
+              icon: const Icon(Icons.business),
+              label: const Text('GESTIÓN DE COMPAÑÍAS'),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const CompaniesScreen(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+
+            // 3. BOTÓN PARA NAVEGAR A GESTIÓN DE SUCURSALES 🏛️ ⬅️ NUEVO
+            ElevatedButton.icon(
+              icon: const Icon(Icons.apartment),
+              label: const Text('GESTIÓN DE SUCURSALES'),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const BranchesScreen(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+
+            // 4. BOTÓN PARA NAVEGAR A GESTIÓN DE USUARIOS
             ElevatedButton.icon(
               icon: const Icon(Icons.group),
               label: const Text('GESTIÓN DE USUARIOS'),
               onPressed: () {
-                // 💡 NAVEGACIÓN A LA NUEVA PANTALLA
                 Navigator.of(context).push(
                   MaterialPageRoute(builder: (context) => const UsersScreen()),
                 );
@@ -1726,6 +2492,8 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
+
+// ----- FILE: lib\screens\login_screen.dart -----
 // lib/screens/login_screen.dart
 
 import 'package:flutter/material.dart';
@@ -1845,302 +2613,8 @@ class LoginScreen extends ConsumerWidget {
   }
 }
 
-// lib/screens/user_form_screen.dart
 
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import '../models/user.dart';
-import '../models/role.dart';
-import '../providers/users_provider.dart';
-import '../providers/roles_provider.dart'; // Importar el nuevo provider de roles
-import 'package:uuid/uuid.dart'; // Necesario para generar localId en modo offline
-
-// Proveedor para generar IDs (usamos Riverpod para consistency)
-final uuidProvider = Provider((ref) => const Uuid());
-
-// Definición del Widget
-class UserFormScreen extends ConsumerStatefulWidget {
-  final User? userToEdit;
-
-  const UserFormScreen({super.key, this.userToEdit});
-
-  @override
-  ConsumerState<UserFormScreen> createState() => _UserFormScreenState();
-}
-
-class _UserFormScreenState extends ConsumerState<UserFormScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
-
-  // 💡 ESTADOS CLAVE PARA EL MANEJO DEL ROL
-  String? _selectedRoleId;
-  String? _selectedRoleName;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.userToEdit != null) {
-      final user = widget.userToEdit!;
-      _usernameController.text = user.username;
-
-      // Si estamos editando, precargar los valores del rol existente
-      _selectedRoleId = user.roleId;
-      _selectedRoleName = user.roleName;
-
-      // Nota: Nunca precargamos la contraseña por seguridad
-    }
-  }
-
-  @override
-  void dispose() {
-    _usernameController.dispose();
-    _passwordController.dispose();
-    super.dispose();
-  }
-
-  void _submitForm() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_selectedRoleId == null || _selectedRoleName == null) {
-      // Validación extra si el dropdown no fue tocado
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Por favor, selecciona un rol.')),
-      );
-      return;
-    }
-
-    final usersNotifier = ref.read(usersProvider.notifier);
-
-    try {
-      // 💡 Lógica de Creación/Actualización envuelta en try-catch
-      if (widget.userToEdit == null) {
-        // --- CREACIÓN (Offline-First) ---
-        final newUserId = ref.read(uuidProvider).v4(); // Generar un localId
-
-        final newUser = UserCreateLocal(
-          username: _usernameController.text,
-          password: _passwordController.text,
-          roleId: _selectedRoleId!,
-          roleName: _selectedRoleName!, // Usamos el nombre REAL
-          localId: newUserId,
-          // Valores de empresa/sucursal deben venir de AuthProvider o un Provider de configuración
-          companyId: "temp-company-uuid",
-          branchId: "temp-branch-uuid",
-          isActive: true,
-        );
-
-        await usersNotifier.createUser(newUser);
-      } else {
-        // --- EDICIÓN (Offline-First) ---
-        final updatedUser = UserUpdateLocal(
-          id: widget.userToEdit!.id,
-          username: _usernameController.text,
-          password: _passwordController.text.isNotEmpty
-              ? _passwordController.text
-              : null,
-          roleId: _selectedRoleId,
-          roleName: _selectedRoleName,
-        );
-
-        await usersNotifier.editUser(updatedUser);
-      }
-
-      // Si no hubo excepción, la operación fue exitosa
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      // 🛑 CAPTURA DE ERROR: Muestra el SnackBar en rojo y NO cierra la pantalla
-      if (mounted) {
-        // Limpiamos el mensaje de la excepción de Dart si es necesario
-        final errorMessage = e.toString().replaceAll('Exception: ', '');
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Error de Operación: $errorMessage',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            backgroundColor: Colors.red.shade700,
-            duration: const Duration(seconds: 4),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // 💡 Observar el proveedor de roles (clave para el Dropdown)
-    final rolesAsyncValue = ref.watch(rolesProvider);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          widget.userToEdit == null ? 'Crear Usuario' : 'Editar Usuario',
-        ),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              TextFormField(
-                controller: _usernameController,
-                decoration: const InputDecoration(
-                  labelText: 'Nombre de Usuario',
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Introduce un nombre de usuario';
-                  }
-                  return null;
-                },
-              ),
-              TextFormField(
-                controller: _passwordController,
-                decoration: const InputDecoration(
-                  labelText: 'Contraseña (mín 6 caracteres)',
-                ),
-                obscureText: true,
-                validator: (value) {
-                  if (widget.userToEdit == null &&
-                      (value == null || value.isEmpty)) {
-                    return 'Introduce una contraseña para el nuevo usuario';
-                  }
-                  if (value != null && value.isNotEmpty && value.length < 6) {
-                    return 'La contraseña debe tener al menos 6 caracteres';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 20),
-
-              // ------------------------------------------
-              // 💡 CAMPO DE SELECCIÓN DE ROL (Dropdown)
-              // ------------------------------------------
-              rolesAsyncValue.when(
-                // Estado 1: Cargando (Muestra un indicador)
-                loading: () => const Center(child: LinearProgressIndicator()),
-
-                // Estado 2: Error (Muestra la causa del fallo)
-                error: (err, stack) => Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '❌ Error al cargar roles:',
-                      style: TextStyle(
-                        color: Colors.red,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      '${err.toString().replaceAll('Exception: ', '')}',
-                      style: const TextStyle(color: Colors.red),
-                    ),
-                    const Text(
-                      'Revisa la conexión y el ApiService.',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ],
-                ),
-
-                // Estado 3: Data (Maneja la lista de roles)
-                data: (roles) {
-                  // 💡 DIAGNÓSTICO CLAVE: ¿La lista está vacía?
-                  if (roles.isEmpty) {
-                    return const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(16.0),
-                        child: Text(
-                          '⚠️ No se encontraron roles. La lista devuelta por el API está vacía.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.orange,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      ),
-                    );
-                  }
-
-                  // Asegurarse de que el rol actual exista en la lista si estamos editando
-                  // y que _selectedRoleId se inicialice si el userToEdit no lo hizo correctamente.
-                  if (widget.userToEdit != null && _selectedRoleId == null) {
-                    final existingRole = roles.firstWhere(
-                      (r) => r.id == widget.userToEdit!.roleId,
-                      orElse: () => roles
-                          .first, // Fallback si el rol no se encuentra (debe ser raro)
-                    );
-                    // Solamente hacemos setState si el rol no estaba inicializado correctamente
-                    // para evitar un 'setState' innecesario después del 'initState'.
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (_selectedRoleId == null) {
-                        setState(() {
-                          _selectedRoleId = existingRole.id;
-                          _selectedRoleName = existingRole.name;
-                        });
-                      }
-                    });
-                  }
-
-                  return DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(
-                      labelText: 'Rol',
-                      border: OutlineInputBorder(),
-                    ),
-                    value: _selectedRoleId, // Usamos el ID como valor
-                    hint: const Text('Selecciona un Rol'),
-                    items: roles.map((Role role) {
-                      return DropdownMenuItem<String>(
-                        value: role.id, // Valor real: el UUID del rol
-                        child: Text(role.name), // Display: el nombre del rol
-                      );
-                    }).toList(),
-                    onChanged: (String? newRoleId) {
-                      if (newRoleId != null) {
-                        final selectedRole = roles.firstWhere(
-                          (r) => r.id == newRoleId,
-                        );
-                        setState(() {
-                          // 💡 CLAVE: Guardamos tanto el ID como el Nombre REAL
-                          _selectedRoleId = newRoleId;
-                          _selectedRoleName = selectedRole.name;
-                        });
-                      }
-                    },
-                    validator: (value) {
-                      if (value == null) {
-                        return 'Debes seleccionar el rol del usuario.';
-                      }
-                      return null;
-                    },
-                  );
-                },
-              ),
-
-              // ------------------------------------------
-              const SizedBox(height: 30),
-              ElevatedButton(
-                onPressed: _submitForm,
-                child: Text(
-                  widget.userToEdit == null
-                      ? 'Crear Usuario'
-                      : 'Guardar Cambios',
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
+// ----- FILE: lib\screens\users_screen.dart -----
 // lib/screens/users_screen.dart
 
 import 'package:flutter/material.dart';
@@ -2281,87 +2755,714 @@ class UserListTile extends ConsumerWidget {
   }
 }
 
-// lib/services/api_service.dart
 
+// ----- FILE: lib\screens\user_form_screen.dart -----
+// lib/screens/user_form_screen.dart
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
+
+// 🚨 Asegúrate de que estas rutas coincidan con tu proyecto
+import '../models/user.dart'; // Contiene UserCreateLocal, UserUpdateLocal
+import '../models/role.dart';
+import '../models/company.dart';
+import '../models/branch.dart';
+import '../providers/users_provider.dart';
+import '../providers/roles_provider.dart';
+import '../providers/companies_provider.dart';
+import '../providers/branches_provider.dart';
+import '../providers/auth_provider.dart';
+
+// Proveedor para generar IDs (usamos Riverpod para consistency)
+final uuidProvider = Provider((ref) => const Uuid());
+
+// Definición del Widget
+class UserFormScreen extends ConsumerStatefulWidget {
+  final User? userToEdit;
+
+  const UserFormScreen({super.key, this.userToEdit});
+
+  @override
+  ConsumerState<UserFormScreen> createState() => _UserFormScreenState();
+}
+
+class _UserFormScreenState extends ConsumerState<UserFormScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+
+  // ESTADOS CLAVE PARA EL MANEJO DEL ROL
+  String? _selectedRoleId;
+  String? _selectedRoleName;
+
+  // NUEVAS VARIABLES DE ESTADO PARA COMPANY Y BRANCH
+  String? _selectedCompanyId;
+  String? _selectedBranchId;
+
+  bool _isLoading = false;
+
+  // VARIABLE DE ESTADO PARA EL ERROR DE VALIDACIÓN DE COMPAÑÍA
+  String? _companyIdValidationError;
+  // VARIABLE DE ESTADO PARA EL ERROR DE SUCURSAL
+  String? _branchIdValidationError;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.userToEdit != null) {
+      final user = widget.userToEdit!;
+      _usernameController.text = user.username;
+
+      // Si estamos editando, precargar los valores del rol y IDs
+      _selectedRoleId = user.roleId;
+      _selectedRoleName = user.roleName;
+
+      _selectedCompanyId = user.companyId;
+      _selectedBranchId = user.branchId;
+    }
+  }
+
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  // Función auxiliar para determinar si un rol requiere compañía
+  bool _roleRequiresCompany(String? roleName) {
+    if (roleName == null) return false;
+    return roleName == 'company_admin' ||
+        roleName == 'cashier' ||
+        roleName == 'accountant';
+  }
+
+  // Función auxiliar para determinar si un rol requiere sucursal
+  bool _roleRequiresBranch(String? roleName) {
+    if (roleName == null) return false;
+    return roleName == 'cashier' || roleName == 'accountant';
+  }
+
+  // -----------------------------------------------------------
+  // FUNCIÓN PRINCIPAL DE ENVÍO Y LÓGICA CONDICIONAL DE IDs
+  // -----------------------------------------------------------
+  void _submitForm() async {
+    // 1. Validaciones de formulario (nativas)
+    if (!_formKey.currentState!.validate()) {
+      setState(() {
+        _isLoading = false;
+        _companyIdValidationError = null;
+        _branchIdValidationError = null;
+      });
+      return;
+    }
+    if (_selectedRoleId == null || _selectedRoleName == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Por favor, selecciona un rol.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      // Limpiar errores personalizados antes de la validación
+      _companyIdValidationError = null;
+      _branchIdValidationError = null;
+    });
+
+    // OBTENER EL USUARIO ACTUAL
+    final currentUserAsync = ref.read(authProvider);
+    final currentUser = currentUserAsync.value;
+
+    if (currentUser == null) {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Error de autenticación: No se pudo obtener el usuario actual.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final usersNotifier = ref.read(usersProvider.notifier);
+
+    final bool isCurrentUserCompanyAdmin =
+        currentUser.roleName == 'company_admin';
+    final bool isCompanyRequired = _roleRequiresCompany(_selectedRoleName);
+    final bool isBranchRequired = _roleRequiresBranch(_selectedRoleName);
+
+    // Lógica de Asignación de IDs Condicionales (Base de la validación)
+    String? finalCompanyId = _selectedCompanyId;
+    String? finalBranchId = _selectedBranchId;
+
+    // ------------------------------------------------------
+    // 🚨 VALIDACIÓN LOCAL PARA COMPANY_ADMIN (y otros roles requeridos)
+    // ------------------------------------------------------
+    if (isCompanyRequired) {
+      // Si el usuario logueado es Company Admin
+      if (isCurrentUserCompanyAdmin) {
+        // 1. Validación de Compañía (Si intenta asignar una que NO es la suya)
+        if (finalCompanyId != null && finalCompanyId != currentUser.companyId) {
+          setState(() {
+            _companyIdValidationError =
+                'Acceso Denegado: Solo puedes asignar usuarios a tu propia compañía.';
+            _isLoading = false;
+          });
+          return;
+        }
+
+        // Forzamos su Company ID para la operación
+        finalCompanyId = currentUser.companyId;
+      } else {
+        // Si el usuario logueado NO es Company Admin (Global Admin)
+
+        if (finalCompanyId == null) {
+          setState(() {
+            _companyIdValidationError =
+                'La compañía es requerida para este rol.';
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+
+      // 2. VALIDACIÓN MANUAL PARA SUCURSAL SI ES CAJERO O CONTADOR
+      if (isBranchRequired) {
+        if (finalBranchId == null || finalBranchId.isEmpty) {
+          setState(() {
+            _branchIdValidationError =
+                'La sucursal es requerida para el rol ${_selectedRoleName?.toUpperCase()}.';
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+    }
+    // ------------------------------------------------------
+
+    // A. Roles que NO requieren compañía/sucursal (limpiar IDs)
+    if (!isCompanyRequired) {
+      finalCompanyId = null;
+      finalBranchId = null;
+    }
+    // B. Rol 'company_admin' requiere compañía, pero NO sucursal
+    else if (_selectedRoleName == 'company_admin') {
+      finalBranchId = null;
+    }
+    // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
+
+    try {
+      if (widget.userToEdit == null) {
+        // --- CREACIÓN (Offline-First) ---
+        final newUserId = ref.read(uuidProvider).v4();
+
+        final newUser = UserCreateLocal(
+          username: _usernameController.text,
+          password: _passwordController.text,
+          roleId: _selectedRoleId!,
+          roleName: _selectedRoleName!,
+          localId: newUserId,
+          companyId: finalCompanyId,
+          branchId: finalBranchId,
+          isActive: true,
+        );
+
+        await usersNotifier.createUser(newUser);
+      } else {
+        // --- EDICIÓN (Offline-First) ---
+        final updatedUser = UserUpdateLocal(
+          id: widget.userToEdit!.id,
+          username: _usernameController.text,
+          password: _passwordController.text.isNotEmpty
+              ? _passwordController.text
+              : null,
+          roleId: _selectedRoleId,
+          roleName: _selectedRoleName,
+          companyId: finalCompanyId,
+          branchId: finalBranchId,
+        );
+
+        await usersNotifier.editUser(updatedUser);
+      }
+
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      // Manejo de Errores de API/Riverpod (genéricos)
+      if (mounted) {
+        final errorMessage = e.toString().replaceAll('Exception: ', '');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Error de Operación: $errorMessage',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            backgroundColor: Colors.red.shade700,
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // -----------------------------------------------------------
+  // WIDGETS AUXILIARES PARA COMPAÑÍA Y SUCURSAL
+  // -----------------------------------------------------------
+
+  Widget _buildCompanyDropdown(List<Company> companies) {
+    return DropdownButtonFormField<String>(
+      decoration: const InputDecoration(
+        labelText: 'Compañía (Requerido)',
+        border: OutlineInputBorder(),
+      ),
+      value: _selectedCompanyId,
+      items: companies.map((c) {
+        return DropdownMenuItem(value: c.id, child: Text(c.name));
+      }).toList(),
+      onChanged: (String? newValue) {
+        setState(() {
+          _selectedCompanyId = newValue;
+          // Al cambiar la compañía, forzamos a nulo la sucursal
+          _selectedBranchId = null;
+        });
+      },
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return 'Debes seleccionar una compañía.';
+        }
+        return null;
+      },
+    );
+  }
+
+  Widget _buildBranchDropdown(List<Branch> availableBranches) {
+    return Column(
+      children: [
+        const SizedBox(height: 20),
+        DropdownButtonFormField<String>(
+          decoration: const InputDecoration(
+            labelText: 'Sucursal (Requerido)',
+            border: OutlineInputBorder(),
+          ),
+          value: _selectedBranchId,
+          items: availableBranches.map((b) {
+            return DropdownMenuItem(value: b.id, child: Text(b.name));
+          }).toList(),
+          onChanged: (String? newValue) {
+            setState(() {
+              _selectedBranchId = newValue;
+            });
+          },
+          validator: (value) {
+            // Este validador nativo se mantiene como fallback para Global Admin
+            if (value == null || value.isEmpty) {
+              return 'Debes seleccionar una sucursal.';
+            }
+            return null;
+          },
+        ),
+      ],
+    );
+  }
+
+  // -----------------------------------------------------------
+  // BUILD METHOD
+  // -----------------------------------------------------------
+  @override
+  Widget build(BuildContext context) {
+    // Observar los proveedores de datos
+    final rolesAsyncValue = ref.watch(rolesProvider);
+    final companiesAsyncValue = ref.watch(companiesProvider);
+    final branchesAsyncValue = ref.watch(branchesProvider);
+
+    // OBTENER EL USUARIO ACTUAL
+    final currentUserAsync = ref.watch(authProvider);
+    final currentUser = currentUserAsync.value;
+
+    final bool isCurrentUserCompanyAdmin =
+        currentUser?.roleName == 'company_admin' ?? false;
+
+    // Lógica de Visibilidad Condicional
+    final bool isCompanyRequired = _roleRequiresCompany(_selectedRoleName);
+    final bool isBranchRequired = _roleRequiresBranch(_selectedRoleName);
+
+    // Solo mostrar el selector de compañía si el usuario no es Company Admin
+    final bool showCompanyDropdown =
+        isCompanyRequired && !isCurrentUserCompanyAdmin;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.userToEdit == null ? 'Crear Usuario' : 'Editar Usuario',
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            children: [
+              // ------------------------------------------
+              // CAMPO DE USERNAME
+              // ------------------------------------------
+              TextFormField(
+                controller: _usernameController,
+                decoration: const InputDecoration(
+                  labelText: 'Nombre de Usuario',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Introduce un nombre de usuario';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 15),
+
+              // ------------------------------------------
+              // CAMPO DE PASSWORD
+              // ------------------------------------------
+              TextFormField(
+                controller: _passwordController,
+                decoration: InputDecoration(
+                  labelText: widget.userToEdit == null
+                      ? 'Contraseña (mín 6 caracteres)'
+                      : 'Contraseña (mín 6 caracteres - dejar vacío para no cambiar)',
+                  border: const OutlineInputBorder(),
+                ),
+                obscureText: true,
+                validator: (value) {
+                  if (widget.userToEdit == null &&
+                      (value == null || value.isEmpty)) {
+                    return 'Introduce una contraseña para el nuevo usuario';
+                  }
+                  if (value != null && value.isNotEmpty && value.length < 6) {
+                    return 'La contraseña debe tener al menos 6 caracteres';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+
+              // ------------------------------------------
+              // CAMPO DE SELECCIÓN DE ROL (Dropdown)
+              // ------------------------------------------
+              rolesAsyncValue.when(
+                loading: () => const Center(child: LinearProgressIndicator()),
+                error: (err, stack) => Text(
+                  '❌ Error al cargar roles: ${err.toString().replaceAll('Exception: ', '')}',
+                  style: const TextStyle(color: Colors.red),
+                ),
+                data: (roles) {
+                  if (roles.isEmpty) {
+                    return const Center(
+                      child: Text('⚠️ No se encontraron roles.'),
+                    );
+                  }
+
+                  return DropdownButtonFormField<String>(
+                    decoration: const InputDecoration(
+                      labelText: 'Rol',
+                      border: OutlineInputBorder(),
+                    ),
+                    value: _selectedRoleId,
+                    hint: const Text('Selecciona un Rol'),
+                    items: roles.map((Role role) {
+                      return DropdownMenuItem<String>(
+                        value: role.id,
+                        child: Text(role.name),
+                      );
+                    }).toList(),
+                    onChanged: (String? newRoleId) {
+                      if (newRoleId != null) {
+                        final selectedRole = roles.firstWhere(
+                          (r) => r.id == newRoleId,
+                        );
+                        setState(() {
+                          _selectedRoleId = newRoleId;
+                          _selectedRoleName = selectedRole.name;
+
+                          final bool newRoleRequiresCompany =
+                              _roleRequiresCompany(_selectedRoleName);
+
+                          if (!newRoleRequiresCompany) {
+                            _selectedCompanyId = null;
+                            _selectedBranchId = null;
+                          } else if (isCurrentUserCompanyAdmin) {
+                            // Si es Company Admin y el rol lo requiere, precarga su ID
+                            _selectedCompanyId = currentUser!.companyId;
+                          } else if (widget.userToEdit == null) {
+                            // Si es Global Admin creando uno nuevo, limpia la selección de compañía
+                            _selectedCompanyId = null;
+                          }
+
+                          _companyIdValidationError = null;
+                          _branchIdValidationError = null;
+                        });
+                      }
+                    },
+                    validator: (value) {
+                      if (value == null) {
+                        return 'Debes seleccionar el rol del usuario.';
+                      }
+                      return null;
+                    },
+                  );
+                },
+              ),
+
+              // ------------------------------------------
+              // CAMPOS DE COMPAÑÍA Y SUCURSAL (CONDICIONALES)
+              // ------------------------------------------
+              if (isCompanyRequired)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 20),
+                    // 1. Dropdown/Info de Compañía
+                    if (showCompanyDropdown) // Global Admin ve esto (Dropdown)
+                      companiesAsyncValue.when(
+                        loading: () =>
+                            const Center(child: LinearProgressIndicator()),
+                        error: (err, stack) => Text(
+                          '❌ Error al cargar compañías: ${err.toString().replaceAll('Exception: ', '')}',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                        data: (companies) {
+                          if (companies.isEmpty) {
+                            return const Center(
+                              child: Text('⚠️ No hay compañías disponibles.'),
+                            );
+                          }
+
+                          // Dropdown de Compañía para Global Admin
+                          return _buildCompanyDropdown(companies);
+                        },
+                      )
+                    else
+                    // Company Admin ve esto (Campo de solo lectura)
+                    if (isCurrentUserCompanyAdmin && isCompanyRequired)
+                      companiesAsyncValue.when(
+                        loading: () =>
+                            const Center(child: LinearProgressIndicator()),
+                        error: (err, stack) => Text(
+                          '❌ Error al cargar su compañía: ${err.toString().replaceAll('Exception: ', '')}',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                        data: (companies) {
+                          final String? currentCompanyId =
+                              currentUser?.companyId;
+
+                          // Buscar la compañía por ID. Usamos cast<Company?>() y orElse para seguridad.
+                          final Company? userCompany = companies
+                              .cast<Company?>()
+                              .firstWhere(
+                                (c) => c?.id == currentCompanyId,
+                                orElse: () => null,
+                              );
+
+                          final String companyName =
+                              userCompany?.name ?? 'Compañía No Encontrada';
+
+                          // Mostrar el campo de solo lectura
+                          return TextFormField(
+                            initialValue: companyName,
+                            readOnly: true,
+                            enabled: false, // Deshabilitado para evitar cambios
+                            decoration: const InputDecoration(
+                              labelText: 'Compañía (Asignada)',
+                              border: OutlineInputBorder(),
+                            ),
+                            style: const TextStyle(
+                              color: Colors.black54,
+                            ), // Estilo para indicar solo lectura
+                          );
+                        },
+                      ),
+
+                    // Mostrar error de validación manual de la compañía
+                    if (_companyIdValidationError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          '⚠️ ${_companyIdValidationError!}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+
+                    // 2. Dropdown de Sucursal (Solo para 'cashier' y 'accountant')
+                    if (isBranchRequired)
+                      branchesAsyncValue.when(
+                        loading: () => const Padding(
+                          padding: EdgeInsets.only(top: 20.0),
+                          child: LinearProgressIndicator(),
+                        ),
+                        error: (err, stack) => Text(
+                          '❌ Error al cargar sucursales: ${err.toString().replaceAll('Exception: ', '')}',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                        data: (allBranches) {
+                          final companyIdToFilter = showCompanyDropdown
+                              ? _selectedCompanyId
+                              : currentUser?.companyId;
+
+                          if (companyIdToFilter == null) {
+                            // Muestra un mensaje si el ID de compañía es nulo (Global Admin debe seleccionar uno)
+                            return const Padding(
+                              padding: EdgeInsets.only(top: 20.0),
+                              child: Text(
+                                '⚠️ Selecciona primero una compañía.',
+                                style: TextStyle(color: Colors.orange),
+                              ),
+                            );
+                          }
+
+                          // Filtrar sucursales por la compañía seleccionada
+                          final availableBranches = allBranches
+                              .where((b) => b.companyId == companyIdToFilter)
+                              .toList();
+
+                          if (availableBranches.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.only(top: 20.0),
+                              child: Text(
+                                '⚠️ La compañía seleccionada no tiene sucursales.',
+                                style: TextStyle(color: Colors.orange),
+                              ),
+                            );
+                          }
+
+                          return _buildBranchDropdown(availableBranches);
+                        },
+                      ),
+
+                    // Mostrar error de validación manual de la Sucursal
+                    if (_branchIdValidationError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          '⚠️ ${_branchIdValidationError!}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+
+              const SizedBox(height: 30),
+
+              // ------------------------------------------
+              // BOTÓN DE GUARDAR
+              // ------------------------------------------
+              ElevatedButton(
+                onPressed: _isLoading ? null : _submitForm,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: _isLoading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    : Text(
+                        widget.userToEdit == null
+                            ? 'Crear Usuario'
+                            : 'Guardar Cambios',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+// ----- FILE: lib\services\api_service.dart -----
+// lib/services/api_service.dart
+import 'package:dcpos/models/branch.dart';
 import 'package:dcpos/models/role.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/token.dart';
 import '../models/user.dart';
-import '../models/company.dart'; // 💡 NUEVO
-import '../models/branch.dart'; // 💡 NUEVO
+import '../models/company.dart';
 import '../providers/auth_provider.dart';
 
 // Proveedor de solo lectura para la URL base
 final apiUrlProvider = Provider<String>(
-  (ref) => 'http://127.0.0.1:8000/api/v1',
+  (ref) => 'http://localhost:8000/api/v1', // ⚠️ CAMBIA ESTA URL POR TU URL REAL
 );
 
-// Usamos un Provider separado para Dio para evitar bucles de dependencia
-final dioInstanceProvider = Provider((ref) {
-  // 1. Crear la instancia de Dio
-  final dio = Dio(
-    BaseOptions(
-      baseUrl: ref.watch(apiUrlProvider),
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 10),
-      contentType: 'application/json',
-    ),
-  );
-
-  // LogInterceptor correctamente agregado
-  dio.interceptors.add(
-    LogInterceptor(
-      requestBody: true,
-      responseBody: true,
-      logPrint: (o) => print('DIO LOG: $o'),
-    ),
-  );
-
-  // 2. Retornar la instancia configurada
-  return dio;
-});
-
 // ---------------------------------------------
-// CLASE INTERCEPTOR PARA EL MANEJO DE TOKEN
+// INTERCEPTOR PARA AUTH Y REFRESH (COMPLETO)
 // ---------------------------------------------
 
-class AuthInterceptor extends QueuedInterceptor {
-  final Ref ref;
+class AuthInterceptor extends Interceptor {
+  final Ref _ref;
   final ApiService apiService;
   bool isRefreshing = false;
 
-  AuthInterceptor(this.ref, this.apiService);
+  AuthInterceptor(this._ref, this.apiService);
 
+  // Sobreescribe el método onRequest para adjuntar el Access Token
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final authNotifier = ref.read(authProvider.notifier);
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
+    // 💡 No añadir token si es la llamada de login o refresh
+    if (options.path.contains('/auth/login') ||
+        options.path.contains('/auth/refresh')) {
+      return handler.next(options);
+    }
+
+    final authNotifier = _ref.read(authProvider.notifier);
     final token = authNotifier.accessToken;
 
-    if (token != null &&
-        !options.path.contains('/auth/login') &&
-        !options.path.contains('/auth/refresh')) {
+    if (token != null) {
       options.headers['Authorization'] = 'Bearer $token';
     }
+
     return handler.next(options);
   }
 
+  // Sobreescribe el método onError para manejar el 401 Unauthorized
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    final authNotifier = ref.read(authProvider.notifier);
-    final String? refresh = authNotifier.refreshToken;
+    final authNotifier = _ref.read(authProvider.notifier);
+    final refresh = authNotifier.refreshToken;
 
-    print('🧩 DEBUG onError PATH: ${err.requestOptions.path}');
-    print('🧩 DEBUG onError STATUS: ${err.response?.statusCode}');
-
-    // 🚨 MANEJO DE REDIRECCIÓN 307:
-    // Si el error es una redirección 307, es probable que la próxima ruta (con slash)
-    // funcione automáticamente con Dio. Si el error persiste, simplemente devolvemos
-    // la excepción para que el DioException se resuelva en el .fetch del interceptor
-    // o en el manejo del Notifier.
-    if (err.response?.statusCode == 307) {
+    // Evitar loop infinito: si la petición fallida ya era la de refresh, o si es un 307
+    if (err.requestOptions.path.contains('/auth/refresh') ||
+        err.response?.statusCode == 307) {
       print(
-        'DEBUG INTERCEPTOR: Se detectó 307 Redirection. Dejando que Dio lo maneje.',
+        'DEBUG INTERCEPTOR: Se detectó 307 Redirection o fallo en /refresh. Dejando que Dio lo maneje.',
       );
       return handler.next(err);
     }
@@ -2387,6 +3488,7 @@ class AuthInterceptor extends QueuedInterceptor {
       // Reintentar la solicitud original con el nuevo token
       final options = err.requestOptions;
       options.headers['Authorization'] = 'Bearer ${authNotifier.accessToken}';
+
       // Utilizamos .fetch para reintentar la llamada.
       final response = await apiService.dio.fetch(options);
       return handler.resolve(response);
@@ -2397,17 +3499,20 @@ class AuthInterceptor extends QueuedInterceptor {
 }
 
 // ---------------------------------------------
-// CLASE API SERVICE
+// CLASE API SERVICE (CORREGIDA)
 // ---------------------------------------------
 
 class ApiService {
   final Dio dio;
   final Ref _ref;
+  String get _apiUrl => _ref.read(apiUrlProvider);
 
-  ApiService(this.dio, this._ref);
+  ApiService(this.dio, this._ref) {
+    // 💡 Asegúrate de que Dio use la URL base
+    dio.options.baseUrl = _apiUrl;
+  }
 
   // --- Auth Endpoints ---
-
   Future<Token> login(String username, String password) async {
     try {
       final response = await dio.post(
@@ -2428,54 +3533,58 @@ class ApiService {
     }
   }
 
-  Future<User> fetchMe() async {
+  Future<Token> refreshToken(String refreshToken) async {
     try {
-      final response = await dio.get('/auth/me');
-
-      if (response.statusCode == 200) {
-        return User.fromJson(response.data);
-      }
-      throw Exception(
-        'Error al obtener datos del usuario: ${response.statusCode}',
+      final response = await dio.post(
+        '/auth/refresh',
+        // El API requiere el Refresh Token en el header como Bearer
+        options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
       );
-    } catch (e) {
-      rethrow;
+      return Token.fromJson(response.data);
+    } on DioException catch (e) {
+      final errorMessage = e.response?.data?['detail'] ?? 'Fallo al refrescar.';
+      throw Exception(errorMessage);
     }
   }
 
-  Future<Token> refreshToken(String refreshToken) async {
-    final dioRefresh = Dio(dio.options);
-
-    final response = await dioRefresh.post(
-      '/auth/refresh',
-      options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
-    );
-    return Token.fromJson(response.data);
+  Future<User> fetchMe() async {
+    try {
+      final response = await dio.get('/auth/me');
+      return User.fromJson(response.data);
+    } on DioException catch (e) {
+      final errorMessage =
+          e.response?.data?['detail'] ?? 'Error al obtener usuario.';
+      throw Exception(errorMessage);
+    }
   }
 
-  // --- Endpoints de Roles ---
+  // --- Role Endpoints ---
   Future<List<Role>> fetchAllRoles() async {
-    final response = await dio.get('/roles');
+    try {
+      final response = await dio.get('/roles/');
 
-    // 1. Aseguramos que la respuesta es un Map (el objeto JSON externo)
-    final data = response.data as Map<String, dynamic>;
+      final responseMap = response.data as Map<String, dynamic>;
+      // Usa la clave 'roles' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['roles'] as List<dynamic>?) ?? [];
 
-    // 2. Extraemos la lista del campo "roles"
-    final rolesJsonList = data['roles'] as List;
-
-    // 3. Mapeamos la lista extraída al modelo Role
-    return rolesJsonList
-        .map((json) => Role.fromJson(json as Map<String, dynamic>))
-        .toList();
+      return jsonList.map((json) => Role.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener roles: ${e.message}');
+    }
   }
 
-  // --- Endpoints de Usuarios (CRUD) ---
+  // --- User Endpoints ---
   Future<List<User>> fetchAllUsers() async {
     try {
-      // 🚨 CORRECCIÓN: Añadir la barra final para evitar el 307 Redirect.
       final response = await dio.get('/users/');
-      final List<dynamic> userList = response.data;
-      return userList.map((json) => User.fromJson(json)).toList();
+
+      final responseMap = response.data as Map<String, dynamic>;
+      // Se asume la clave 'data' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['data'] as List<dynamic>?) ?? [];
+
+      return jsonList.map((json) => User.fromJson(json)).toList();
     } on DioException catch (e) {
       throw Exception('Error al obtener usuarios: ${e.message}');
     }
@@ -2483,11 +3592,10 @@ class ApiService {
 
   Future<User> createUser(Map<String, dynamic> userData) async {
     try {
-      // 🚨 CORRECCIÓN: Añadir la barra final para evitar el 307 Redirect.
+      // Usa la barra final: /users/
       final response = await dio.post('/users/', data: userData);
       return User.fromJson(response.data);
     } on DioException catch (e) {
-      // Se mantiene el manejo de errores original.
       final errorMessage =
           e.response?.data?['detail'] ?? 'Error desconocido al crear usuario.';
       throw Exception(errorMessage);
@@ -2496,8 +3604,8 @@ class ApiService {
 
   Future<User> updateUser(String userId, Map<String, dynamic> userData) async {
     try {
-      // Se asume que el backend usa PATCH o PUT sin la barra al final
-      final response = await dio.patch('/users/$userId', data: userData);
+      // Corrección para 404: Añadir la barra final.
+      final response = await dio.patch('/users/$userId/', data: userData);
       return User.fromJson(response.data);
     } on DioException catch (e) {
       final errorMessage =
@@ -2509,7 +3617,7 @@ class ApiService {
 
   Future<void> deleteUser(String userId) async {
     try {
-      // Se asume que el backend usa DELETE sin la barra al final
+      // Se asume que DELETE usa /users/$userId sin barra final.
       await dio.delete('/users/$userId');
     } on DioException catch (e) {
       final errorMessage =
@@ -2520,20 +3628,49 @@ class ApiService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // 💡 MÉTODOS PARA COMPANY
   // ----------------------------------------------------------------------
   Future<List<Company>> fetchCompanies() async {
-    final response = await dio.get('/platform/companies'); //
-    final List<dynamic> jsonList = response.data;
-    return jsonList.map((json) => Company.fromJson(json)).toList();
+    try {
+      final response = await dio.get('/platform/companies');
+
+      // Se asume que la respuesta es DIRECTAMENTE una List<dynamic>.
+      final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
+
+      return jsonList.map((json) => Company.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener compañías: ${e.message}');
+    }
   }
 
   Future<Company> createCompany(Map<String, dynamic> data) async {
-    final response = await dio.post(
-      '/platform/companies', //
-      data: data,
-    );
-    return Company.fromJson(response.data);
+    try {
+      final response = await dio.post('/platform/companies', data: data);
+      return Company.fromJson(response.data);
+    } on DioException catch (e) {
+      // 💡 CORRECCIÓN EN EL MANEJO DE ERRORES:
+      if (e.response != null) {
+        // Intentamos obtener el detalle del error del cuerpo de la respuesta
+        final errorDetail = e.response?.data is Map
+            ? e.response?.data['detail'] as String?
+            : null;
+
+        // Si es 403, lanzamos una excepción con el mensaje del backend o uno predefinido.
+        if (e.response!.statusCode == 403) {
+          throw Exception(
+            errorDetail ??
+                'Fallo de Autorización (403): Permiso denegado por el servidor.',
+          );
+        }
+
+        // Para otros errores de respuesta (4xx, 5xx)
+        throw Exception(
+          errorDetail ?? 'Error HTTP ${e.response!.statusCode}: ${e.message}',
+        );
+      }
+      // Si el error no es de respuesta (ej: error de conexión)
+      throw Exception('Error de red al crear compañía: ${e.message}');
+    }
   }
 
   Future<Company> updateCompany(
@@ -2541,27 +3678,32 @@ class ApiService {
     Map<String, dynamic> data,
   ) async {
     final response = await dio.patch(
-      '/platform/companies/$companyId', //
+      '/platform/companies/$companyId',
       data: data,
     );
     return Company.fromJson(response.data);
   }
 
   Future<void> deleteCompany(String companyId) async {
-    await dio.delete('/platform/companies/$companyId'); //
+    await dio.delete('/platform/companies/$companyId');
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA BRANCH
+  // 💡 MÉTODOS PARA BRANCH (NUEVOS)
   // ----------------------------------------------------------------------
-
-  // Nota: El API solo permite listar branches por company_id
   Future<List<Branch>> fetchBranches(String companyId) async {
-    final response = await dio.get(
-      '/platform/companies/$companyId/branches', //
-    );
-    final List<dynamic> jsonList = response.data;
-    return jsonList.map((json) => Branch.fromJson(json)).toList();
+    try {
+      final response = await dio.get('/platform/companies/$companyId/branches');
+
+      final responseMap = response.data as Map<String, dynamic>;
+      // Se asume la clave 'data' y maneja nulos.
+      final List<dynamic> jsonList =
+          (responseMap['data'] as List<dynamic>?) ?? [];
+
+      return jsonList.map((json) => Branch.fromJson(json)).toList();
+    } on DioException catch (e) {
+      throw Exception('Error al obtener sucursales: ${e.message}');
+    }
   }
 
   Future<Branch> createBranch(
@@ -2569,34 +3711,34 @@ class ApiService {
     Map<String, dynamic> data,
   ) async {
     final response = await dio.post(
-      '/platform/companies/$companyId/branches', //
+      '/platform/companies/$companyId/branches',
       data: data,
     );
     return Branch.fromJson(response.data);
   }
 
   Future<Branch> updateBranch(
+    String companyId,
     String branchId,
     Map<String, dynamic> data,
   ) async {
     final response = await dio.patch(
-      '/platform/branches/$branchId', //
+      '/platform/companies/$companyId/branches/$branchId',
       data: data,
     );
     return Branch.fromJson(response.data);
   }
 
-  // Nota: El API requiere ambos IDs para eliminar
   Future<void> deleteBranch(String companyId, String branchId) async {
-    await dio.delete(
-      '/platform/companies/$companyId/branches/$branchId', //
-    );
+    await dio.delete('/platform/companies/$companyId/branches/$branchId');
   }
 }
 
 // ---------------------------------------------
 // PROVEEDOR DE API SERVICE (CORRECTO)
 // ---------------------------------------------
+
+final dioInstanceProvider = Provider((ref) => Dio());
 
 final apiServiceProvider = Provider((ref) {
   final dio = ref.watch(dioInstanceProvider);
@@ -2606,10 +3748,11 @@ final apiServiceProvider = Provider((ref) {
   if (dio.interceptors.whereType<AuthInterceptor>().isEmpty) {
     dio.interceptors.add(AuthInterceptor(ref, apiService));
   }
-
   return apiService;
 });
 
+
+// ----- FILE: lib\services\connectivity_service.dart -----
 // lib/services/connectivity_service.dart (CORREGIDO)
 
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -2657,6 +3800,7 @@ class ConnectivityService {
 final connectivityServiceProvider = Provider((ref) => ConnectivityService());
 
 
+// ----- FILE: lib\services\isar_service.dart -----
 // lib/services/isar_service.dart
 
 import 'package:dcpos/models/branch.dart';
@@ -2703,7 +3847,13 @@ class IsarService {
       final dir = await getApplicationSupportDirectory();
       return await Isar.open(
         // Asegurar que todos los esquemas necesarios se abren
-        [UserSchema, RoleSchema, SyncQueueItemSchema],
+        [
+          UserSchema,
+          RoleSchema,
+          SyncQueueItemSchema,
+          CompanySchema,
+          BranchSchema,
+        ],
         directory: dir.path,
         inspector: true, // Útil para depuración
       );
@@ -2950,6 +4100,8 @@ class IsarService {
 
 final isarServiceProvider = Provider((ref) => IsarService());
 
+
+// ----- FILE: lib\services\sync_service.dart -----
 // lib/services/sync_service.dart
 
 import 'dart:convert';
@@ -2957,8 +4109,8 @@ import 'package:dcpos/providers/auth_provider.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/sync_queue_item.dart';
-import '../models/user.dart'; // 💡 NECESARIO para User.fromJson
-import '../providers/users_provider.dart'; // 💡 NECESARIO para invalidar
+import '../models/user.dart';
+import '../providers/users_provider.dart';
 import 'api_service.dart';
 import 'isar_service.dart';
 import 'connectivity_service.dart';
@@ -3017,25 +4169,30 @@ class SyncService {
           break; // La cola está vacía.
         }
 
-        final payloadMap = jsonDecode(item.payload);
-        print('-> Procesando [${item.operation.name}] a ${item.endpoint}');
+        // 🚀 FIX: Capturamos el valor no-nulo en una variable no-nullable.
+        final currentItem = item;
+
+        final payloadMap = jsonDecode(currentItem.payload);
+        print(
+          '-> Procesando [${currentItem.operation.name}] a ${currentItem.endpoint}',
+        );
 
         try {
           dynamic response;
 
-          switch (item.operation) {
+          switch (currentItem.operation) {
             case SyncOperation.CREATE_USER:
               response = await apiService.dio.post(
-                item.endpoint, // '/users/'
+                currentItem.endpoint, // '/users/'
                 data: payloadMap,
               );
 
               // 🚨 CORRECCIÓN CRÍTICA: Reemplazar el usuario temporal con el real
               final createdUser = User.fromJson(response.data);
 
-              if (item.localId != null) {
+              if (currentItem.localId != null) {
                 // 1. Eliminar el usuario temporal (usando el ID local)
-                await isarService.deleteUser(item.localId!);
+                await isarService.deleteUser(currentItem.localId!);
 
                 // 2. Guardar el usuario final con el ID real del servidor
                 await isarService.saveUsers([createdUser]);
@@ -3044,7 +4201,7 @@ class SyncService {
                 _ref.invalidate(usersProvider);
 
                 print(
-                  '✅ SYNC: Usuario local ${item.localId} actualizado a ServerID ${createdUser.id}',
+                  '✅ SYNC: Usuario local ${currentItem.localId} actualizado a ServerID ${createdUser.id}',
                 );
               }
               break;
@@ -3052,7 +4209,8 @@ class SyncService {
             case SyncOperation.UPDATE_USER:
               // 🚨 CORRECCIÓN: Usar item.endpoint directamente (ya debe contener el ID)
               response = await apiService.dio.patch(
-                item.endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
+                currentItem
+                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
                 data: payloadMap,
               );
               _ref.invalidate(usersProvider);
@@ -3060,7 +4218,8 @@ class SyncService {
 
             case SyncOperation.DELETE_USER:
               response = await apiService.dio.delete(
-                item.endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
+                currentItem
+                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
               );
               // La eliminación física ya se maneja en el Notifier si la red está ON.
               // Aquí solo debemos desencolar. La invalidación es opcional ya que DELETE
@@ -3068,13 +4227,27 @@ class SyncService {
               // _ref.invalidate(usersProvider);
               break;
 
+            case SyncOperation.CREATE_COMPANY:
+            case SyncOperation.UPDATE_COMPANY:
+            case SyncOperation.DELETE_COMPANY:
+            case SyncOperation.CREATE_BRANCH:
+            case SyncOperation.UPDATE_BRANCH:
+            case SyncOperation.DELETE_BRANCH:
+              // Estas operaciones se manejan en sus respectivos Notifiers (BranchesNotifier, CompaniesNotifier)
+              // Aquí solo las desencolamos si son exitosas (aunque deberían ser manejadas por el notifier al recargar)
+              // Para mantener la lógica separada, solo agregamos el caso aquí para evitar el 'default'.
+              print(
+                'Operación de Compañía/Sucursal gestionada en su propio Notifier. Saltando.',
+              );
+              break;
+
             default:
-              print('Operación no implementada: ${item.operation}');
+              print('Operación no implementada: ${currentItem.operation}');
               break;
           }
 
           // Si la llamada es exitosa, desencolar
-          await isarService.dequeueSyncItem(item.id);
+          await isarService.dequeueSyncItem(currentItem.id);
         } catch (e) {
           // 🚨 Manejo de Falla: Detiene la cola y muestra el error del servidor.
           print('❌ FALLA Sincronización: ${e.toString()}');
@@ -3099,162 +4272,4 @@ class SyncService {
   }
 }
 
-// lib/main.dart
-
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'providers/auth_provider.dart';
-import 'screens/home_screen.dart'; // Asegúrate de que este archivo existe
-import 'screens/login_screen.dart';
-// Importa las pantallas necesarias (o una pantalla de espera inicial)
-
-void main() {
-  // ⚠️ Importante: Riverpod requiere que la aplicación esté envuelta
-  // en un ProviderScope para que los proveedores funcionen.
-  runApp(const ProviderScope(child: MyApp()));
-}
-
-class MyApp extends ConsumerWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // 1. Observa el estado del proveedor de autenticación
-    final authState = ref.watch(authProvider);
-    return MaterialApp(
-      title: 'DCPOS Offline-First',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      // 2. Lógica de navegación condicional
-      home: authState.when(
-        // Muestra un loader mientras se carga el estado inicial (chequeo en Isar)
-        loading: () =>
-            const Scaffold(body: Center(child: CircularProgressIndicator())),
-        // Si hay un error, volvemos a mostrar el Login (y el SnackBar mostrará el error)
-        error: (e, st) => const LoginScreen(),
-        // Cuando los datos están disponibles (user puede ser null o el objeto User)
-        data: (user) {
-          if (user != null) {
-            // USUARIO LOGUEADO: Navega a Home
-            return const HomeScreen(); // <--- ¡Esta es la redirección!
-          } else {
-            // Usuario NO logueado o después de Logout
-            return const LoginScreen();
-          }
-        },
-      ),
-    );
-  }
-}
-
-name: dcpos
-description: "A new Flutter project."
-# The following line prevents the package from being accidentally published to
-# pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: 'none' # Remove this line if you wish to publish to pub.dev
-
-# The following defines the version and build number for your application.
-# A version number is three numbers separated by dots, like 1.2.43
-# followed by an optional build number separated by a +.
-# Both the version and the builder number may be overridden in flutter
-# build by specifying --build-name and --build-number, respectively.
-# In Android, build-name is used as versionName while build-number used as versionCode.
-# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
-# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
-# Read more about iOS versioning at
-# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
-# In Windows, build-name is used as the major, minor, and patch parts
-# of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
-
-environment:
-  sdk: ^3.9.2
-
-# Dependencies specify other packages that your package needs in order to work.
-# To automatically upgrade your package dependencies to the latest versions
-# consider running `flutter pub upgrade --major-versions`. Alternatively,
-# dependencies can be manually updated by changing the version numbers below to
-# the latest version available on pub.dev. To see which dependencies have newer
-# versions available, run `flutter pub outdated`.
-dependencies:
-  flutter:
-    sdk: flutter
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
-
-  # Estado (riverpod es ideal para apps grandes y complejas)
-  flutter_riverpod: ^2.5.1
-  
-  # HTTP y modelos de datos (JSON)
-  dio: ^5.4.3
-  json_annotation: ^4.8.1
-  
-  # Base de Datos Local (Isar)
-  isar: ^3.1.0+1
-  isar_flutter_libs: ^3.1.0+1
-  # NECESARIO PARA ENCONTRAR LA RUTA DE ISAR (path_provider)
-  path_provider: ^2.1.3 # Añade esta línea
-  copy_with_extension: ^5.0.0
-  connectivity_plus: ^7.0.0
-  uuid: ^4.5.1
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-
-  # The "flutter_lints" package below contains a set of recommended lints to
-  # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
-  flutter_lints: ^5.0.0
-
-  # Generadores de código para Isar y JSON
-  build_runner: ^2.4.9
-  json_serializable: ^6.7.1
-  isar_generator: ^3.1.0+1
-  copy_with_extension_gen: ^5.0.0
-
-# For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
-
-# The following section is specific to Flutter packages.
-flutter:
-
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
-  uses-material-design: true
-
-  # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
-
-  # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/to/resolution-aware-images
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
-
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   - family: Trajan Pro
-  #     fonts:
-  #       - asset: fonts/TrajanPro.ttf
-  #       - asset: fonts/TrajanPro_Bold.ttf
-  #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
 
