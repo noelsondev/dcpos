@@ -3,52 +3,46 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/user.dart'; // Contiene User, UserCreateLocal, UserUpdateLocal
+import '../models/user.dart';
 import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
 import 'auth_provider.dart';
 
-// Nota: Se asume que isarServiceProvider, apiServiceProvider y connectivityServiceProvider están definidos.
-
-// --- JERARQUÍA DE ROLES DE EJEMPLO (Prioridad: menor número = más privilegio) ---
+// --- JERARQUÍA DE ROLES ---
 const Map<String, int> _ROLE_HIERARCHY = {
   "global_admin": 0,
   "company_admin": 1,
   "cashier": 2,
   "accountant": 3,
-  'guest': 99,
+  "guest": 99,
 };
 
-// --- NOTIFIER PRINCIPAL ---
-
 class UsersNotifier extends AsyncNotifier<List<User>> {
-  // Getters para servicios
   ApiService get _apiService => ref.read(apiServiceProvider);
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
 
-  // 💡 FUNCIÓN CLAVE: Procesa la cola de sincronización
+  // ---------------------------------------------------------------------------
+  // PROCESAR COLA DE SINCRONIZACIÓN
+  // ---------------------------------------------------------------------------
   Future<void> _processSyncQueue() async {
     final isConnected = await _connectivityService.checkConnection();
-    if (!isConnected) return; // Salir si no hay conexión
+    if (!isConnected) return;
 
     SyncQueueItem? item;
-    // Procesar la cola hasta que esté vacía o falle una operación
     while ((item = await _isarService.getNextSyncItem()) != null) {
       try {
-        // Para UPDATE y DELETE, extraemos el ID del endpoint (ej: /users/ID)
         final targetId = item!.endpoint.split('/').last;
 
         switch (item.operation) {
           case SyncOperation.CREATE_USER:
             final data = jsonDecode(item.payload);
             final newUser = await _apiService.createUser(data);
-            // 🚨 Paso crucial para manejar IDs temporales
+
             if (item.localId != null) {
-              // REQUIERE IsarService.updateLocalUserWithRealId
               await _isarService.updateLocalUserWithRealId(
                 item.localId!,
                 newUser,
@@ -58,341 +52,299 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
 
           case SyncOperation.UPDATE_USER:
             final data = jsonDecode(item.payload);
-            // Usamos el targetId extraído del endpoint
             await _apiService.updateUser(targetId, data);
-            // La siguiente _syncLocalDatabase confirmará el cambio del API.
             break;
 
           case SyncOperation.DELETE_USER:
-            // Usamos el targetId extraído del endpoint
             await _apiService.deleteUser(targetId);
-            // La siguiente _syncLocalDatabase eliminará el dato obsoleto de Isar.
             break;
+
           default:
-            print('DEBUG SYNC: Operación desconocida: ${item.operation.name}');
             break;
         }
 
-        // En éxito, eliminar el item de la cola
         await _isarService.dequeueSyncItem(item.id);
-        print(
-          'DEBUG SYNC: Operación ${item.operation.name} sincronizada exitosamente.',
-        );
       } catch (e) {
-        // Si alguna operación falla (ej. servidor rechaza la data),
-        // detenemos la cola para no perder la orden de dependencia.
-        print(
-          'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
-        );
-        break;
+        break; // detener si falla
       }
     }
   }
 
-  // Lógica de limpieza y sincronización (sin cambios)
+  // ---------------------------------------------------------------------------
+  // SINCRONIZAR BASE LOCAL
+  // ---------------------------------------------------------------------------
   Future<void> _syncLocalDatabase(List<User> onlineUsers) async {
     final localUsers = await _isarService.getAllUsers();
-    final Set<String> onlineUserIds = onlineUsers.map((u) => u.id).toSet();
-    final List<String> staleUserIds = localUsers
-        .where((localUser) => !onlineUserIds.contains(localUser.id))
-        .map((localUser) => localUser.id)
+
+    final onlineIds = onlineUsers.map((e) => e.id).toSet();
+    final stale = localUsers
+        .where((e) => !onlineIds.contains(e.id))
+        .map((e) => e.id)
         .toList();
-    for (final userId in staleUserIds) {
-      await _isarService.deleteUser(userId);
+
+    for (final id in stale) {
+      await _isarService.deleteUser(id);
     }
+
     await _isarService.saveUsers(onlineUsers);
   }
 
   @override
   Future<List<User>> build() async {
-    final localUsers = await _isarService.getAllUsers();
-    final activeLocalUsers = localUsers
-        .where((u) => u.isDeleted == false)
-        .toList();
+    final local = await _isarService.getAllUsers();
+    final visibleLocal = local.where((e) => !e.isDeleted).toList();
 
-    if (activeLocalUsers.isNotEmpty) {
-      state = AsyncValue.data(activeLocalUsers);
+    if (visibleLocal.isNotEmpty) {
+      state = AsyncValue.data(visibleLocal);
     }
 
     try {
-      // 🛑 PRIMERO PROCESAMOS LA COLA al inicio
       await _processSyncQueue();
 
-      final onlineUsers = await _apiService.fetchAllUsers();
-      await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
-    } catch (e) {
-      if (activeLocalUsers.isNotEmpty) return activeLocalUsers;
-      throw Exception(
-        'Fallo al cargar usuarios online y no hay datos offline: $e',
-      );
+      final online = await _apiService.fetchAllUsers();
+      await _syncLocalDatabase(online);
+      return online;
+    } catch (_) {
+      if (visibleLocal.isNotEmpty) return visibleLocal;
+      rethrow;
     }
   }
 
-  // -------------------------------------------------------------------
-  // 💡 MÉTODOS PRIVADOS OFFLINE (Sin cambios, ya manejan el encolamiento)
-  // -------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // OFFLINE CREATE
+  // ---------------------------------------------------------------------------
   Future<void> _handleOfflineCreate(
     UserCreateLocal data,
-    List<User> previousList,
+    String targetRoleName,
+    List<User> prev,
   ) async {
-    // ⚠️ Validación crucial para el modo offline
     if (data.localId == null) {
-      throw Exception(
-        'Error interno: localId no fue generado para operación offline.',
-      );
+      throw Exception("localId no fue generado.");
     }
 
-    // 1. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.CREATE_USER,
-      endpoint: '/api/v1/users/',
+      endpoint: "/api/v1/users/",
       payload: jsonEncode(data.toJson()),
       localId: data.localId!,
     );
+
     await _isarService.enqueueSyncItem(syncItem);
 
-    // 2. Actualización optimista (creación del usuario temporal)
     final tempUser = User(
-      id: data.localId!, // Usamos el ID temporal
+      id: data.localId!,
       username: data.username,
       roleId: data.roleId,
-      roleName: data.roleName,
+      roleName: targetRoleName,
       createdAt: DateTime.now().toIso8601String(),
       isActive: data.isActive,
       companyId: data.companyId,
       branchId: data.branchId,
       isDeleted: false,
     );
+
     await _isarService.saveUsers([tempUser]);
-
-    // 3. Actualizar el estado de Riverpod
-    state = AsyncValue.data([...previousList, tempUser]);
-
-    print('DEBUG OFFLINE: Fallback a modo offline (Creación encolada).');
+    state = AsyncValue.data([...prev, tempUser]);
   }
 
+  // ---------------------------------------------------------------------------
+  // OFFLINE UPDATE
+  // ---------------------------------------------------------------------------
   Future<void> _handleOfflineUpdate(
     UserUpdateLocal data,
-    List<User> userList,
+    String? targetRoleName,
+    List<User> list,
   ) async {
-    final userDataMap = data.toJson();
+    final original = list.firstWhere((u) => u.id == data.id);
 
-    // 1. Crear la lista actualizada y el usuario a guardar (Optimistic Update)
-    final updatedList = userList.map((user) {
-      return user.id == data.id
-          ? user.copyWith(
-              username: data.username ?? user.username,
-              roleName: data.roleName ?? user.roleName,
-              roleId: data.roleId ?? user.roleId,
-            )
-          : user;
+    final updatedList = list.map((user) {
+      if (user.id != data.id) return user;
+
+      return user.copyWith(
+        username: data.username ?? user.username,
+        roleId: data.roleId ?? user.roleId,
+        roleName: targetRoleName ?? user.roleName,
+        isActive: data.isActive ?? user.isActive,
+      );
     }).toList();
 
-    final userToSave = updatedList.firstWhere((u) => u.id == data.id);
+    final updatedUser = updatedList.firstWhere((u) => u.id == data.id);
 
-    // 2. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.UPDATE_USER,
-      endpoint: '/api/v1/users/${data.id}',
-      payload: jsonEncode(userDataMap),
+      endpoint: "/api/v1/users/${data.id}",
+      payload: jsonEncode(data.toJson()),
     );
+
     await _isarService.enqueueSyncItem(syncItem);
-
-    // 3. Guardar la actualización optimista en Isar
-    await _isarService.saveUsers([userToSave]);
-
-    // 4. Actualizar el estado de Riverpod
+    await _isarService.saveUsers([updatedUser]);
     state = AsyncValue.data(updatedList);
-
-    print('DEBUG OFFLINE: Fallback a modo offline (Edición encolada).');
   }
 
-  // --- MÉTODOS CRUD CORREGIDOS CON FALLBACK (Sin cambios en el cuerpo) ---
-
-  Future<void> createUser(UserCreateLocal data) async {
-    final previousState = state;
+  // ---------------------------------------------------------------------------
+  // CREATE USER
+  // ---------------------------------------------------------------------------
+  Future<void> createUser(UserCreateLocal data, String targetRoleName) async {
+    final prev = state;
     if (!state.hasValue) return;
 
     try {
-      // 1. RBAC: VALIDACIÓN DE CREACIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
-          !_canCreateUserWithRole(currentUser.roleName, data.roleName)) {
+          !_canCreateUserWithRole(currentUser.roleName, targetRoleName)) {
         throw Exception(
-          'Permiso denegado: No puede crear el usuario con el rol "${data.roleName}".',
+          'Permiso denegado: No puede crear un usuario con rol "$targetRoleName".',
         );
       }
 
-      // 2. Intentar ONLINE
-      final isConnected = await _connectivityService.checkConnection();
+      final online = await _connectivityService.checkConnection();
 
-      if (!isConnected) {
-        await _handleOfflineCreate(data, previousState.value!);
-        return;
+      if (!online) {
+        return _handleOfflineCreate(data, targetRoleName, prev.value!);
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
         final newUser = await _apiService.createUser(data.toJson());
         await _isarService.saveUsers([newUser]);
-        state = AsyncValue.data([...previousState.value!, newUser]);
-      } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
-        await _handleOfflineCreate(data, previousState.value!);
+
+        state = AsyncValue.data([...prev.value!, newUser]);
+      } catch (_) {
+        return _handleOfflineCreate(data, targetRoleName, prev.value!);
       }
-    } catch (e, st) {
-      throw Exception('Fallo al crear usuario: ${e.toString()}');
+    } catch (e) {
+      throw Exception("Fallo al crear usuario: $e");
     }
   }
 
-  Future<void> editUser(UserUpdateLocal data) async {
-    final previousState = state;
-    if (!state.hasValue || data.id == null) return;
+  // ---------------------------------------------------------------------------
+  // UPDATE USER
+  // ---------------------------------------------------------------------------
+  Future<void> editUser(UserUpdateLocal data, String? targetRoleName) async {
+    final prev = state;
+    if (!state.hasValue) return;
+
+    final list = prev.value!;
+    final original = list.firstWhere((u) => u.id == data.id);
+
+    final finalRole = targetRoleName ?? original.roleName;
 
     try {
-      final userList = previousState.value!;
-      final originalUser = userList.firstWhere((u) => u.id == data.id);
-      final targetRole = data.roleName ?? originalUser.roleName;
-
-      // 1. RBAC: VALIDACIÓN DE EDICIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
-          !_canModifyTargetUserRole(currentUser.roleName, targetRole)) {
+          !_canModifyTargetUserRole(currentUser.roleName, finalRole)) {
         throw Exception(
-          'Permiso denegado: No puede modificar el usuario con rol "$targetRole".',
+          'Permiso denegado: No puede modificar usuario con rol "$finalRole".',
         );
       }
 
-      // 2. Intentar ONLINE
-      final isConnected = await _connectivityService.checkConnection();
+      final online = await _connectivityService.checkConnection();
 
-      if (!isConnected) {
-        // Si no hay conexión de red, vamos directo al offline
-        await _handleOfflineUpdate(data, userList);
-        return;
+      if (!online) {
+        return _handleOfflineUpdate(data, targetRoleName, list);
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
-        final userDataMap = data.toJson();
-        final updatedUser = await _apiService.updateUser(data.id, userDataMap);
+        final updatedUser = await _apiService.updateUser(
+          data.id,
+          data.toJson(),
+        );
+
         await _isarService.saveUsers([updatedUser]);
 
-        final finalUpdatedList = userList.map((user) {
-          return user.id == data.id ? updatedUser : user;
-        }).toList();
-        state = AsyncValue.data(finalUpdatedList);
-      } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
-        await _handleOfflineUpdate(data, userList);
+        state = AsyncValue.data(
+          list.map((u) => u.id == data.id ? updatedUser : u).toList(),
+        );
+      } catch (_) {
+        return _handleOfflineUpdate(data, targetRoleName, list);
       }
-    } catch (e, st) {
-      state = previousState;
-      throw Exception('Fallo al editar usuario: ${e.toString()}');
+    } catch (e) {
+      state = prev;
+      throw Exception("Fallo al editar usuario: $e");
     }
   }
 
-  Future<void> deleteUser(String userId) async {
-    final isConnected = await _connectivityService.checkConnection();
-    final previousState = state;
-
+  // ---------------------------------------------------------------------------
+  // DELETE USER
+  // ---------------------------------------------------------------------------
+  Future<void> deleteUser(String id) async {
+    final prev = state;
     if (!state.hasValue) return;
 
-    try {
-      final userList = previousState.value!;
-      final userToDelete = userList.firstWhere((u) => u.id == userId);
-      final targetRole = userToDelete.roleName;
+    final list = prev.value!;
+    final user = list.firstWhere((u) => u.id == id);
 
-      final currentUser = ref.read(authProvider).value;
-      if (currentUser == null ||
-          !_canModifyTargetUserRole(currentUser.roleName, targetRole)) {
-        throw Exception(
-          'Permiso denegado: No puede eliminar al usuario con rol "$targetRole".',
-        );
-      }
+    final currentUser = ref.read(authProvider).value;
+    if (currentUser == null ||
+        !_canModifyTargetUserRole(currentUser.roleName, user.roleName)) {
+      throw Exception(
+        "Permiso denegado: No puede eliminar al usuario con rol '${user.roleName}'.",
+      );
+    }
 
-      // Optimistically update state (remueve el usuario de la lista mostrada)
-      final updatedList = userList.where((u) => u.id != userId).toList();
-      state = AsyncValue.data(updatedList);
+    final newList = list.where((u) => u.id != id).toList();
+    state = AsyncValue.data(newList);
 
-      if (!isConnected) {
-        // OFFLINE: Marcar y encolar
-        final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
-        await _isarService.saveUsers([userMarkedForDeletion]);
+    final online = await _connectivityService.checkConnection();
 
-        final syncItem = SyncQueueItem.create(
+    if (!online) {
+      final marked = user.copyWith(isDeleted: true);
+      await _isarService.saveUsers([marked]);
+
+      await _isarService.enqueueSyncItem(
+        SyncQueueItem.create(
           operation: SyncOperation.DELETE_USER,
-          endpoint: '/api/v1/users/$userId',
-          payload: '{}',
-        );
-        await _isarService.enqueueSyncItem(syncItem);
-      } else {
-        // ONLINE: Llamar API y DELECIÓN LOCAL
-        try {
-          await _apiService.deleteUser(userId);
-          await _isarService.deleteUser(userId);
-        } catch (e) {
-          // 🚨 FALLBACK para DELETE: Marcar y encolar
-          final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
-          await _isarService.saveUsers([userMarkedForDeletion]);
+          endpoint: "/api/v1/users/$id",
+          payload: "{}",
+        ),
+      );
+      return;
+    }
 
-          final syncItem = SyncQueueItem.create(
-            operation: SyncOperation.DELETE_USER,
-            endpoint: '/api/v1/users/$userId',
-            payload: '{}',
-          );
-          await _isarService.enqueueSyncItem(syncItem);
-          print(
-            'DEBUG OFFLINE: Fallback a modo offline (Eliminación encolada).',
-          );
-        }
-      }
-    } catch (e, st) {
-      state = previousState;
-      throw Exception('Fallo al eliminar usuario: ${e.toString()}');
+    try {
+      await _apiService.deleteUser(id);
+      await _isarService.deleteUser(id);
+    } catch (_) {
+      final marked = user.copyWith(isDeleted: true);
+      await _isarService.saveUsers([marked]);
+
+      await _isarService.enqueueSyncItem(
+        SyncQueueItem.create(
+          operation: SyncOperation.DELETE_USER,
+          endpoint: "/api/v1/users/$id",
+          payload: "{}",
+        ),
+      );
     }
   }
 
-  // Refresca la lista de usuarios desde el servidor
+  // 🔄 REFRESH
   Future<void> fetchOnlineUsers() async {
     state = await AsyncValue.guard(() async {
-      // 🛑 PRIMERO PROCESAMOS LA COLA
       await _processSyncQueue();
-
-      final onlineUsers = await _apiService.fetchAllUsers();
-      await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
+      final online = await _apiService.fetchAllUsers();
+      await _syncLocalDatabase(online);
+      return online;
     });
   }
 
-  // --- LÓGICA DE AYUDA RBAC (Sin cambios) ---
-  int _getRolePriority(String? roleName) {
-    if (roleName == null) return _ROLE_HIERARCHY['guest']!;
-    final normalizedRoleName = roleName.toLowerCase().replaceAll(' ', '_');
-    if (_ROLE_HIERARCHY.containsKey(normalizedRoleName)) {
-      return _ROLE_HIERARCHY[normalizedRoleName]!;
-    }
-    return _ROLE_HIERARCHY['guest']!;
+  // ---------------------------------------------------------------------------
+  // RBAC HELPERS
+  // ---------------------------------------------------------------------------
+  int _getRolePriority(String roleName) {
+    final norm = roleName.toLowerCase().replaceAll(" ", "_");
+    return _ROLE_HIERARCHY[norm] ?? _ROLE_HIERARCHY["guest"]!;
   }
 
-  bool _canCreateUserWithRole(String creatingUserRole, String targetUserRole) {
-    final creatorPriority = _getRolePriority(creatingUserRole);
-    final targetPriority = _getRolePriority(targetUserRole);
-    if (targetPriority == _ROLE_HIERARCHY['global_admin']) return false;
-    return creatorPriority < targetPriority;
+  bool _canCreateUserWithRole(String creatorRole, String targetRole) {
+    if (targetRole == "global_admin") return false;
+    return _getRolePriority(creatorRole) < _getRolePriority(targetRole);
   }
 
-  bool _canModifyTargetUserRole(
-    String modifyingUserRole,
-    String targetUserRole,
-  ) {
-    final modifierPriority = _getRolePriority(modifyingUserRole);
-    final targetPriority = _getRolePriority(targetUserRole);
-    return modifierPriority < targetPriority;
+  bool _canModifyTargetUserRole(String modifierRole, String targetRole) {
+    return _getRolePriority(modifierRole) < _getRolePriority(targetRole);
   }
 }
 
-final usersProvider = AsyncNotifierProvider<UsersNotifier, List<User>>(() {
-  return UsersNotifier();
-});
+final usersProvider = AsyncNotifierProvider<UsersNotifier, List<User>>(
+  () => UsersNotifier(),
+);

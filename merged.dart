@@ -481,7 +481,7 @@ int fastHash(String string) {
 }
 
 // ----------------------------------------------------------------------
-// 📝 MODELO DE BASE DE DATOS Y API
+// 📝 MODELO DE BASE DE DATOS Y API (roleName se mantiene aquí para la UI)
 // ----------------------------------------------------------------------
 
 @JsonSerializable()
@@ -504,7 +504,7 @@ class User {
   final String roleId;
 
   @JsonKey(name: 'role_name', required: true)
-  final String roleName;
+  final String roleName; // <--- Se mantiene aquí para la lectura desde la API
 
   final bool isActive;
 
@@ -545,10 +545,9 @@ class User {
 }
 
 // ----------------------------------------------------------------------
-// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (OFFLINE FIRST)
+// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (OFFLINE FIRST - CREACIÓN)
 // ----------------------------------------------------------------------
 
-// Este es el modelo que el Admin crea en la app.
 @JsonSerializable()
 class UserCreateLocal {
   @JsonKey(required: true)
@@ -560,8 +559,7 @@ class UserCreateLocal {
   @JsonKey(name: 'role_id', required: true)
   final String roleId;
 
-  @JsonKey(name: 'role_name', required: true)
-  final String roleName;
+  // 🔥 ELIMINADO: roleName, ya que el backend no lo necesita/acepta en la creación.
 
   final bool isActive;
 
@@ -576,7 +574,7 @@ class UserCreateLocal {
     required this.username,
     required this.password,
     required this.roleId,
-    required this.roleName,
+    // 🔥 ELIMINADO: required this.roleName,
     this.isActive = true,
     this.companyId,
     this.branchId,
@@ -589,24 +587,22 @@ class UserCreateLocal {
   Map<String, dynamic> toJson() => _$UserCreateLocalToJson(this);
 }
 
-// 🚨 MODELO PARA LA ACTUALIZACIÓN (Necesitas esto para la edición)
+// ----------------------------------------------------------------------
+// 🚨 MODELO PARA LA ACTUALIZACIÓN (OFFLINE FIRST - EDICIÓN)
+// ----------------------------------------------------------------------
+
 @JsonSerializable(includeIfNull: false) // No incluye campos nulos en el JSON
 class UserUpdateLocal {
   // ✅ CORREGIDO: Usamos 'id' para ser consistentes.
   final String id;
 
-  // ✅ CORREGIDO: Añadido roleId que es esencial para la edición.
   @JsonKey(name: 'role_id')
   final String? roleId;
 
   final String? username;
   final String? password;
 
-  //CLAVE: Añadido 'roleName'.
-  // 'includeToJson: false' evita que se serialice al enviarlo a la API,
-  // pero permite acceder a él en el Notifier para la lógica.
-  @JsonKey(includeToJson: false)
-  final String? roleName;
+  // 🔥 ELIMINADO: roleName, ya que el backend lo rechaza al actualizar.
 
   final bool? isActive;
   final String? companyId;
@@ -616,7 +612,7 @@ class UserUpdateLocal {
     required this.id, // ID del servidor
     this.username,
     this.password,
-    this.roleName,
+    // 🔥 ELIMINADO: this.roleName,
     this.roleId,
     this.isActive,
     this.companyId,
@@ -1406,52 +1402,46 @@ final rolesMapProvider = Provider<Map<String, Role>>((ref) {
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/user.dart'; // Contiene User, UserCreateLocal, UserUpdateLocal
+import '../models/user.dart';
 import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
 import 'auth_provider.dart';
 
-// Nota: Se asume que isarServiceProvider, apiServiceProvider y connectivityServiceProvider están definidos.
-
-// --- JERARQUÍA DE ROLES DE EJEMPLO (Prioridad: menor número = más privilegio) ---
+// --- JERARQUÍA DE ROLES ---
 const Map<String, int> _ROLE_HIERARCHY = {
   "global_admin": 0,
   "company_admin": 1,
   "cashier": 2,
   "accountant": 3,
-  'guest': 99,
+  "guest": 99,
 };
 
-// --- NOTIFIER PRINCIPAL ---
-
 class UsersNotifier extends AsyncNotifier<List<User>> {
-  // Getters para servicios
   ApiService get _apiService => ref.read(apiServiceProvider);
   IsarService get _isarService => ref.read(isarServiceProvider);
   ConnectivityService get _connectivityService =>
       ref.read(connectivityServiceProvider);
 
-  // 💡 FUNCIÓN CLAVE: Procesa la cola de sincronización
+  // ---------------------------------------------------------------------------
+  // PROCESAR COLA DE SINCRONIZACIÓN
+  // ---------------------------------------------------------------------------
   Future<void> _processSyncQueue() async {
     final isConnected = await _connectivityService.checkConnection();
-    if (!isConnected) return; // Salir si no hay conexión
+    if (!isConnected) return;
 
     SyncQueueItem? item;
-    // Procesar la cola hasta que esté vacía o falle una operación
     while ((item = await _isarService.getNextSyncItem()) != null) {
       try {
-        // Para UPDATE y DELETE, extraemos el ID del endpoint (ej: /users/ID)
         final targetId = item!.endpoint.split('/').last;
 
         switch (item.operation) {
           case SyncOperation.CREATE_USER:
             final data = jsonDecode(item.payload);
             final newUser = await _apiService.createUser(data);
-            // 🚨 Paso crucial para manejar IDs temporales
+
             if (item.localId != null) {
-              // REQUIERE IsarService.updateLocalUserWithRealId
               await _isarService.updateLocalUserWithRealId(
                 item.localId!,
                 newUser,
@@ -1461,344 +1451,302 @@ class UsersNotifier extends AsyncNotifier<List<User>> {
 
           case SyncOperation.UPDATE_USER:
             final data = jsonDecode(item.payload);
-            // Usamos el targetId extraído del endpoint
             await _apiService.updateUser(targetId, data);
-            // La siguiente _syncLocalDatabase confirmará el cambio del API.
             break;
 
           case SyncOperation.DELETE_USER:
-            // Usamos el targetId extraído del endpoint
             await _apiService.deleteUser(targetId);
-            // La siguiente _syncLocalDatabase eliminará el dato obsoleto de Isar.
             break;
+
           default:
-            print('DEBUG SYNC: Operación desconocida: ${item.operation.name}');
             break;
         }
 
-        // En éxito, eliminar el item de la cola
         await _isarService.dequeueSyncItem(item.id);
-        print(
-          'DEBUG SYNC: Operación ${item.operation.name} sincronizada exitosamente.',
-        );
       } catch (e) {
-        // Si alguna operación falla (ej. servidor rechaza la data),
-        // detenemos la cola para no perder la orden de dependencia.
-        print(
-          'ERROR SYNC: Fallo la sincronización de ${item!.operation.name}: $e',
-        );
-        break;
+        break; // detener si falla
       }
     }
   }
 
-  // Lógica de limpieza y sincronización (sin cambios)
+  // ---------------------------------------------------------------------------
+  // SINCRONIZAR BASE LOCAL
+  // ---------------------------------------------------------------------------
   Future<void> _syncLocalDatabase(List<User> onlineUsers) async {
     final localUsers = await _isarService.getAllUsers();
-    final Set<String> onlineUserIds = onlineUsers.map((u) => u.id).toSet();
-    final List<String> staleUserIds = localUsers
-        .where((localUser) => !onlineUserIds.contains(localUser.id))
-        .map((localUser) => localUser.id)
+
+    final onlineIds = onlineUsers.map((e) => e.id).toSet();
+    final stale = localUsers
+        .where((e) => !onlineIds.contains(e.id))
+        .map((e) => e.id)
         .toList();
-    for (final userId in staleUserIds) {
-      await _isarService.deleteUser(userId);
+
+    for (final id in stale) {
+      await _isarService.deleteUser(id);
     }
+
     await _isarService.saveUsers(onlineUsers);
   }
 
   @override
   Future<List<User>> build() async {
-    final localUsers = await _isarService.getAllUsers();
-    final activeLocalUsers = localUsers
-        .where((u) => u.isDeleted == false)
-        .toList();
+    final local = await _isarService.getAllUsers();
+    final visibleLocal = local.where((e) => !e.isDeleted).toList();
 
-    if (activeLocalUsers.isNotEmpty) {
-      state = AsyncValue.data(activeLocalUsers);
+    if (visibleLocal.isNotEmpty) {
+      state = AsyncValue.data(visibleLocal);
     }
 
     try {
-      // 🛑 PRIMERO PROCESAMOS LA COLA al inicio
       await _processSyncQueue();
 
-      final onlineUsers = await _apiService.fetchAllUsers();
-      await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
-    } catch (e) {
-      if (activeLocalUsers.isNotEmpty) return activeLocalUsers;
-      throw Exception(
-        'Fallo al cargar usuarios online y no hay datos offline: $e',
-      );
+      final online = await _apiService.fetchAllUsers();
+      await _syncLocalDatabase(online);
+      return online;
+    } catch (_) {
+      if (visibleLocal.isNotEmpty) return visibleLocal;
+      rethrow;
     }
   }
 
-  // -------------------------------------------------------------------
-  // 💡 MÉTODOS PRIVADOS OFFLINE (Sin cambios, ya manejan el encolamiento)
-  // -------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // OFFLINE CREATE
+  // ---------------------------------------------------------------------------
   Future<void> _handleOfflineCreate(
     UserCreateLocal data,
-    List<User> previousList,
+    String targetRoleName,
+    List<User> prev,
   ) async {
-    // ⚠️ Validación crucial para el modo offline
     if (data.localId == null) {
-      throw Exception(
-        'Error interno: localId no fue generado para operación offline.',
-      );
+      throw Exception("localId no fue generado.");
     }
 
-    // 1. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.CREATE_USER,
-      endpoint: '/api/v1/users/',
+      endpoint: "/api/v1/users/",
       payload: jsonEncode(data.toJson()),
       localId: data.localId!,
     );
+
     await _isarService.enqueueSyncItem(syncItem);
 
-    // 2. Actualización optimista (creación del usuario temporal)
     final tempUser = User(
-      id: data.localId!, // Usamos el ID temporal
+      id: data.localId!,
       username: data.username,
       roleId: data.roleId,
-      roleName: data.roleName,
+      roleName: targetRoleName,
       createdAt: DateTime.now().toIso8601String(),
       isActive: data.isActive,
       companyId: data.companyId,
       branchId: data.branchId,
       isDeleted: false,
     );
+
     await _isarService.saveUsers([tempUser]);
-
-    // 3. Actualizar el estado de Riverpod
-    state = AsyncValue.data([...previousList, tempUser]);
-
-    print('DEBUG OFFLINE: Fallback a modo offline (Creación encolada).');
+    state = AsyncValue.data([...prev, tempUser]);
   }
 
+  // ---------------------------------------------------------------------------
+  // OFFLINE UPDATE
+  // ---------------------------------------------------------------------------
   Future<void> _handleOfflineUpdate(
     UserUpdateLocal data,
-    List<User> userList,
+    String? targetRoleName,
+    List<User> list,
   ) async {
-    final userDataMap = data.toJson();
+    final original = list.firstWhere((u) => u.id == data.id);
 
-    // 1. Crear la lista actualizada y el usuario a guardar (Optimistic Update)
-    final updatedList = userList.map((user) {
-      return user.id == data.id
-          ? user.copyWith(
-              username: data.username ?? user.username,
-              roleName: data.roleName ?? user.roleName,
-              roleId: data.roleId ?? user.roleId,
-            )
-          : user;
+    final updatedList = list.map((user) {
+      if (user.id != data.id) return user;
+
+      return user.copyWith(
+        username: data.username ?? user.username,
+        roleId: data.roleId ?? user.roleId,
+        roleName: targetRoleName ?? user.roleName,
+        isActive: data.isActive ?? user.isActive,
+      );
     }).toList();
 
-    final userToSave = updatedList.firstWhere((u) => u.id == data.id);
+    final updatedUser = updatedList.firstWhere((u) => u.id == data.id);
 
-    // 2. Encolar la operación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.UPDATE_USER,
-      endpoint: '/api/v1/users/${data.id}',
-      payload: jsonEncode(userDataMap),
+      endpoint: "/api/v1/users/${data.id}",
+      payload: jsonEncode(data.toJson()),
     );
+
     await _isarService.enqueueSyncItem(syncItem);
-
-    // 3. Guardar la actualización optimista en Isar
-    await _isarService.saveUsers([userToSave]);
-
-    // 4. Actualizar el estado de Riverpod
+    await _isarService.saveUsers([updatedUser]);
     state = AsyncValue.data(updatedList);
-
-    print('DEBUG OFFLINE: Fallback a modo offline (Edición encolada).');
   }
 
-  // --- MÉTODOS CRUD CORREGIDOS CON FALLBACK (Sin cambios en el cuerpo) ---
-
-  Future<void> createUser(UserCreateLocal data) async {
-    final previousState = state;
+  // ---------------------------------------------------------------------------
+  // CREATE USER
+  // ---------------------------------------------------------------------------
+  Future<void> createUser(UserCreateLocal data, String targetRoleName) async {
+    final prev = state;
     if (!state.hasValue) return;
 
     try {
-      // 1. RBAC: VALIDACIÓN DE CREACIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
-          !_canCreateUserWithRole(currentUser.roleName, data.roleName)) {
+          !_canCreateUserWithRole(currentUser.roleName, targetRoleName)) {
         throw Exception(
-          'Permiso denegado: No puede crear el usuario con el rol "${data.roleName}".',
+          'Permiso denegado: No puede crear un usuario con rol "$targetRoleName".',
         );
       }
 
-      // 2. Intentar ONLINE
-      final isConnected = await _connectivityService.checkConnection();
+      final online = await _connectivityService.checkConnection();
 
-      if (!isConnected) {
-        await _handleOfflineCreate(data, previousState.value!);
-        return;
+      if (!online) {
+        return _handleOfflineCreate(data, targetRoleName, prev.value!);
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
         final newUser = await _apiService.createUser(data.toJson());
         await _isarService.saveUsers([newUser]);
-        state = AsyncValue.data([...previousState.value!, newUser]);
-      } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
-        await _handleOfflineCreate(data, previousState.value!);
+
+        state = AsyncValue.data([...prev.value!, newUser]);
+      } catch (_) {
+        return _handleOfflineCreate(data, targetRoleName, prev.value!);
       }
-    } catch (e, st) {
-      throw Exception('Fallo al crear usuario: ${e.toString()}');
+    } catch (e) {
+      throw Exception("Fallo al crear usuario: $e");
     }
   }
 
-  Future<void> editUser(UserUpdateLocal data) async {
-    final previousState = state;
-    if (!state.hasValue || data.id == null) return;
+  // ---------------------------------------------------------------------------
+  // UPDATE USER
+  // ---------------------------------------------------------------------------
+  Future<void> editUser(UserUpdateLocal data, String? targetRoleName) async {
+    final prev = state;
+    if (!state.hasValue) return;
+
+    final list = prev.value!;
+    final original = list.firstWhere((u) => u.id == data.id);
+
+    final finalRole = targetRoleName ?? original.roleName;
 
     try {
-      final userList = previousState.value!;
-      final originalUser = userList.firstWhere((u) => u.id == data.id);
-      final targetRole = data.roleName ?? originalUser.roleName;
-
-      // 1. RBAC: VALIDACIÓN DE EDICIÓN
       final currentUser = ref.read(authProvider).value;
       if (currentUser == null ||
-          !_canModifyTargetUserRole(currentUser.roleName, targetRole)) {
+          !_canModifyTargetUserRole(currentUser.roleName, finalRole)) {
         throw Exception(
-          'Permiso denegado: No puede modificar el usuario con rol "$targetRole".',
+          'Permiso denegado: No puede modificar usuario con rol "$finalRole".',
         );
       }
 
-      // 2. Intentar ONLINE
-      final isConnected = await _connectivityService.checkConnection();
+      final online = await _connectivityService.checkConnection();
 
-      if (!isConnected) {
-        // Si no hay conexión de red, vamos directo al offline
-        await _handleOfflineUpdate(data, userList);
-        return;
+      if (!online) {
+        return _handleOfflineUpdate(data, targetRoleName, list);
       }
 
       try {
-        // ONLINE: LLAMAR DIRECTO AL API
-        final userDataMap = data.toJson();
-        final updatedUser = await _apiService.updateUser(data.id, userDataMap);
+        final updatedUser = await _apiService.updateUser(
+          data.id,
+          data.toJson(),
+        );
+
         await _isarService.saveUsers([updatedUser]);
 
-        final finalUpdatedList = userList.map((user) {
-          return user.id == data.id ? updatedUser : user;
-        }).toList();
-        state = AsyncValue.data(finalUpdatedList);
-      } catch (e) {
-        // 🚨 FALLBACK: Si falla la llamada al API
-        await _handleOfflineUpdate(data, userList);
+        state = AsyncValue.data(
+          list.map((u) => u.id == data.id ? updatedUser : u).toList(),
+        );
+      } catch (_) {
+        return _handleOfflineUpdate(data, targetRoleName, list);
       }
-    } catch (e, st) {
-      state = previousState;
-      throw Exception('Fallo al editar usuario: ${e.toString()}');
+    } catch (e) {
+      state = prev;
+      throw Exception("Fallo al editar usuario: $e");
     }
   }
 
-  Future<void> deleteUser(String userId) async {
-    final isConnected = await _connectivityService.checkConnection();
-    final previousState = state;
-
+  // ---------------------------------------------------------------------------
+  // DELETE USER
+  // ---------------------------------------------------------------------------
+  Future<void> deleteUser(String id) async {
+    final prev = state;
     if (!state.hasValue) return;
 
-    try {
-      final userList = previousState.value!;
-      final userToDelete = userList.firstWhere((u) => u.id == userId);
-      final targetRole = userToDelete.roleName;
+    final list = prev.value!;
+    final user = list.firstWhere((u) => u.id == id);
 
-      final currentUser = ref.read(authProvider).value;
-      if (currentUser == null ||
-          !_canModifyTargetUserRole(currentUser.roleName, targetRole)) {
-        throw Exception(
-          'Permiso denegado: No puede eliminar al usuario con rol "$targetRole".',
-        );
-      }
+    final currentUser = ref.read(authProvider).value;
+    if (currentUser == null ||
+        !_canModifyTargetUserRole(currentUser.roleName, user.roleName)) {
+      throw Exception(
+        "Permiso denegado: No puede eliminar al usuario con rol '${user.roleName}'.",
+      );
+    }
 
-      // Optimistically update state (remueve el usuario de la lista mostrada)
-      final updatedList = userList.where((u) => u.id != userId).toList();
-      state = AsyncValue.data(updatedList);
+    final newList = list.where((u) => u.id != id).toList();
+    state = AsyncValue.data(newList);
 
-      if (!isConnected) {
-        // OFFLINE: Marcar y encolar
-        final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
-        await _isarService.saveUsers([userMarkedForDeletion]);
+    final online = await _connectivityService.checkConnection();
 
-        final syncItem = SyncQueueItem.create(
+    if (!online) {
+      final marked = user.copyWith(isDeleted: true);
+      await _isarService.saveUsers([marked]);
+
+      await _isarService.enqueueSyncItem(
+        SyncQueueItem.create(
           operation: SyncOperation.DELETE_USER,
-          endpoint: '/api/v1/users/$userId',
-          payload: '{}',
-        );
-        await _isarService.enqueueSyncItem(syncItem);
-      } else {
-        // ONLINE: Llamar API y DELECIÓN LOCAL
-        try {
-          await _apiService.deleteUser(userId);
-          await _isarService.deleteUser(userId);
-        } catch (e) {
-          // 🚨 FALLBACK para DELETE: Marcar y encolar
-          final userMarkedForDeletion = userToDelete.copyWith(isDeleted: true);
-          await _isarService.saveUsers([userMarkedForDeletion]);
+          endpoint: "/api/v1/users/$id",
+          payload: "{}",
+        ),
+      );
+      return;
+    }
 
-          final syncItem = SyncQueueItem.create(
-            operation: SyncOperation.DELETE_USER,
-            endpoint: '/api/v1/users/$userId',
-            payload: '{}',
-          );
-          await _isarService.enqueueSyncItem(syncItem);
-          print(
-            'DEBUG OFFLINE: Fallback a modo offline (Eliminación encolada).',
-          );
-        }
-      }
-    } catch (e, st) {
-      state = previousState;
-      throw Exception('Fallo al eliminar usuario: ${e.toString()}');
+    try {
+      await _apiService.deleteUser(id);
+      await _isarService.deleteUser(id);
+    } catch (_) {
+      final marked = user.copyWith(isDeleted: true);
+      await _isarService.saveUsers([marked]);
+
+      await _isarService.enqueueSyncItem(
+        SyncQueueItem.create(
+          operation: SyncOperation.DELETE_USER,
+          endpoint: "/api/v1/users/$id",
+          payload: "{}",
+        ),
+      );
     }
   }
 
-  // Refresca la lista de usuarios desde el servidor
+  // 🔄 REFRESH
   Future<void> fetchOnlineUsers() async {
     state = await AsyncValue.guard(() async {
-      // 🛑 PRIMERO PROCESAMOS LA COLA
       await _processSyncQueue();
-
-      final onlineUsers = await _apiService.fetchAllUsers();
-      await _syncLocalDatabase(onlineUsers);
-      return onlineUsers;
+      final online = await _apiService.fetchAllUsers();
+      await _syncLocalDatabase(online);
+      return online;
     });
   }
 
-  // --- LÓGICA DE AYUDA RBAC (Sin cambios) ---
-  int _getRolePriority(String? roleName) {
-    if (roleName == null) return _ROLE_HIERARCHY['guest']!;
-    final normalizedRoleName = roleName.toLowerCase().replaceAll(' ', '_');
-    if (_ROLE_HIERARCHY.containsKey(normalizedRoleName)) {
-      return _ROLE_HIERARCHY[normalizedRoleName]!;
-    }
-    return _ROLE_HIERARCHY['guest']!;
+  // ---------------------------------------------------------------------------
+  // RBAC HELPERS
+  // ---------------------------------------------------------------------------
+  int _getRolePriority(String roleName) {
+    final norm = roleName.toLowerCase().replaceAll(" ", "_");
+    return _ROLE_HIERARCHY[norm] ?? _ROLE_HIERARCHY["guest"]!;
   }
 
-  bool _canCreateUserWithRole(String creatingUserRole, String targetUserRole) {
-    final creatorPriority = _getRolePriority(creatingUserRole);
-    final targetPriority = _getRolePriority(targetUserRole);
-    if (targetPriority == _ROLE_HIERARCHY['global_admin']) return false;
-    return creatorPriority < targetPriority;
+  bool _canCreateUserWithRole(String creatorRole, String targetRole) {
+    if (targetRole == "global_admin") return false;
+    return _getRolePriority(creatorRole) < _getRolePriority(targetRole);
   }
 
-  bool _canModifyTargetUserRole(
-    String modifyingUserRole,
-    String targetUserRole,
-  ) {
-    final modifierPriority = _getRolePriority(modifyingUserRole);
-    final targetPriority = _getRolePriority(targetUserRole);
-    return modifierPriority < targetPriority;
+  bool _canModifyTargetUserRole(String modifierRole, String targetRole) {
+    return _getRolePriority(modifierRole) < _getRolePriority(targetRole);
   }
 }
 
-final usersProvider = AsyncNotifierProvider<UsersNotifier, List<User>>(() {
-  return UsersNotifier();
-});
+final usersProvider = AsyncNotifierProvider<UsersNotifier, List<User>>(
+  () => UsersNotifier(),
+);
 
 
 // ----- FILE: lib\screens\branches_screen.dart -----
@@ -2764,7 +2712,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 // 🚨 Asegúrate de que estas rutas coincidan con tu proyecto
-import '../models/user.dart'; // Contiene UserCreateLocal, UserUpdateLocal
+import '../models/user.dart'; // Contiene User, UserCreateLocal, UserUpdateLocal
 import '../models/role.dart';
 import '../models/company.dart';
 import '../models/branch.dart';
@@ -2916,6 +2864,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
         // Forzamos su Company ID para la operación
         finalCompanyId = currentUser.companyId;
+
+        // Si el rol NO requiere sucursal (ej: company_admin), forzamos null a la sucursal
+        if (!isBranchRequired) {
+          finalBranchId = null;
+        }
       } else {
         // Si el usuario logueado NO es Company Admin (Global Admin)
 
@@ -2926,6 +2879,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
             _isLoading = false;
           });
           return;
+        }
+
+        // Si el rol NO requiere sucursal (ej: company_admin), forzamos null a la sucursal
+        if (!isBranchRequired) {
+          finalBranchId = null;
         }
       }
 
@@ -2948,10 +2906,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
       finalCompanyId = null;
       finalBranchId = null;
     }
-    // B. Rol 'company_admin' requiere compañía, pero NO sucursal
-    else if (_selectedRoleName == 'company_admin') {
-      finalBranchId = null;
-    }
+    // B. Rol 'company_admin' requiere compañía, pero NO sucursal (Ya manejado en la sección de isCompanyRequired)
     // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
 
     try {
@@ -2963,14 +2918,14 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           username: _usernameController.text,
           password: _passwordController.text,
           roleId: _selectedRoleId!,
-          roleName: _selectedRoleName!,
           localId: newUserId,
-          companyId: finalCompanyId,
-          branchId: finalBranchId,
+          companyId: finalCompanyId, // Usa el ID final (puede ser null)
+          branchId: finalBranchId, // Usa el ID final (puede ser null)
           isActive: true,
         );
 
-        await usersNotifier.createUser(newUser);
+        // IMPORTANTE: el provider espera (UserCreateLocal, String targetRoleName)
+        await usersNotifier.createUser(newUser, _selectedRoleName!);
       } else {
         // --- EDICIÓN (Offline-First) ---
         final updatedUser = UserUpdateLocal(
@@ -2980,12 +2935,13 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
               ? _passwordController.text
               : null,
           roleId: _selectedRoleId,
-          roleName: _selectedRoleName,
-          companyId: finalCompanyId,
-          branchId: finalBranchId,
+          companyId: finalCompanyId, // Usa el ID final (puede ser null)
+          branchId: finalBranchId, // Usa el ID final (puede ser null)
+          isActive: null,
         );
 
-        await usersNotifier.editUser(updatedUser);
+        // provider: editUser(UserUpdateLocal data, String? targetRoleName)
+        await usersNotifier.editUser(updatedUser, _selectedRoleName);
       }
 
       if (mounted) Navigator.of(context).pop();
@@ -3200,10 +3156,16 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                           } else if (isCurrentUserCompanyAdmin) {
                             // Si es Company Admin y el rol lo requiere, precarga su ID
                             _selectedCompanyId = currentUser!.companyId;
+                            // Si el nuevo rol es company_admin, limpia la sucursal.
+                            if (_selectedRoleName == 'company_admin') {
+                              _selectedBranchId = null;
+                            }
                           } else if (widget.userToEdit == null) {
                             // Si es Global Admin creando uno nuevo, limpia la selección de compañía
                             _selectedCompanyId = null;
+                            _selectedBranchId = null;
                           }
+                          // Si es Global Admin editando y el nuevo rol requiere compañía, se mantienen los valores para que el dropdown los muestre.
 
                           _companyIdValidationError = null;
                           _branchIdValidationError = null;
@@ -3405,305 +3367,213 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
 // ----- FILE: lib\services\api_service.dart -----
 // lib/services/api_service.dart
+
 import 'package:dcpos/models/branch.dart';
 import 'package:dcpos/models/role.dart';
+import 'package:dcpos/models/token.dart';
+import 'package:dcpos/models/user.dart';
+import 'package:dcpos/models/company.dart';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/token.dart';
-import '../models/user.dart';
-import '../models/company.dart';
+
 import '../providers/auth_provider.dart';
 
-// Proveedor de solo lectura para la URL base
+// URL base del backend
 final apiUrlProvider = Provider<String>(
-  (ref) => 'http://localhost:8000/api/v1', // ⚠️ CAMBIA ESTA URL POR TU URL REAL
+  (ref) => 'http://localhost:8000/api/v1',
 );
 
-// ---------------------------------------------
-// INTERCEPTOR PARA AUTH Y REFRESH (COMPLETO)
-// ---------------------------------------------
+///
+/// ================================
+///     AUTH INTERCEPTOR
+/// ================================
+///
 
 class AuthInterceptor extends Interceptor {
-  final Ref _ref;
-  final ApiService apiService;
-  bool isRefreshing = false;
+  final Ref ref;
+  final ApiService api;
 
-  AuthInterceptor(this._ref, this.apiService);
+  AuthInterceptor(this.ref, this.api);
 
-  // Sobreescribe el método onRequest para adjuntar el Access Token
   @override
-  void onRequest(
-    RequestOptions options,
-    RequestInterceptorHandler handler,
-  ) async {
-    // 💡 No añadir token si es la llamada de login o refresh
-    if (options.path.contains('/auth/login') ||
-        options.path.contains('/auth/refresh')) {
-      return handler.next(options);
-    }
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    final token = ref.read(authProvider.notifier).accessToken;
 
-    final authNotifier = _ref.read(authProvider.notifier);
-    final token = authNotifier.accessToken;
-
-    if (token != null) {
+    if (token != null && token.isNotEmpty) {
       options.headers['Authorization'] = 'Bearer $token';
     }
 
-    return handler.next(options);
+    super.onRequest(options, handler);
   }
 
-  // Sobreescribe el método onError para manejar el 401 Unauthorized
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    final authNotifier = _ref.read(authProvider.notifier);
-    final refresh = authNotifier.refreshToken;
+    // Solo intentamos refresh si hay 401
+    if (err.response?.statusCode == 401) {
+      final refreshToken = ref.read(authProvider.notifier).refreshToken;
 
-    // Evitar loop infinito: si la petición fallida ya era la de refresh, o si es un 307
-    if (err.requestOptions.path.contains('/auth/refresh') ||
-        err.response?.statusCode == 307) {
-      print(
-        'DEBUG INTERCEPTOR: Se detectó 307 Redirection o fallo en /refresh. Dejando que Dio lo maneje.',
-      );
-      return handler.next(err);
-    }
-
-    if (err.response?.statusCode == 401 &&
-        !err.requestOptions.path.contains('/auth/refresh') &&
-        refresh != null) {
-      print('🧩 DEBUG onError -> ENTRANDO A BLOQUE DE REFRESH');
-      if (!isRefreshing) {
-        isRefreshing = true;
-        try {
-          final newToken = await apiService.refreshToken(refresh);
-          authNotifier.updateToken(newToken);
-        } catch (e) {
-          print('DEBUG INTERCEPTOR: FALLO al refrescar token. Error: $e');
-          await authNotifier.logout();
-          return handler.reject(err);
-        } finally {
-          isRefreshing = false;
-        }
+      if (refreshToken == null) {
+        handler.next(err);
+        return;
       }
 
-      // Reintentar la solicitud original con el nuevo token
-      final options = err.requestOptions;
-      options.headers['Authorization'] = 'Bearer ${authNotifier.accessToken}';
+      try {
+        // Refrescamos token
+        final newToken = await api.refreshToken(refreshToken);
 
-      // Utilizamos .fetch para reintentar la llamada.
-      final response = await apiService.dio.fetch(options);
-      return handler.resolve(response);
+        // Lo guardamos en AuthNotifier + Isar
+        ref.read(authProvider.notifier).updateToken(newToken);
+
+        // Reintentamos la petición original
+        final retryResponse = await api.dio.fetch(err.requestOptions);
+
+        return handler.resolve(retryResponse);
+      } catch (e) {
+        handler.next(err);
+        return;
+      }
     }
 
-    return handler.next(err);
+    handler.next(err);
   }
 }
 
-// ---------------------------------------------
-// CLASE API SERVICE (CORREGIDA)
-// ---------------------------------------------
+///
+/// ================================
+///       API SERVICE
+/// ================================
+///
 
 class ApiService {
   final Dio dio;
   final Ref _ref;
-  String get _apiUrl => _ref.read(apiUrlProvider);
+
+  String get _baseUrl => _ref.read(apiUrlProvider);
 
   ApiService(this.dio, this._ref) {
-    // 💡 Asegúrate de que Dio use la URL base
-    dio.options.baseUrl = _apiUrl;
+    dio.options.baseUrl = _baseUrl;
+
+    // Evitar duplicar interceptores
+    if (dio.interceptors.whereType<AuthInterceptor>().isEmpty) {
+      dio.interceptors.add(AuthInterceptor(_ref, this));
+    }
   }
 
-  // --- Auth Endpoints ---
+  ///
+  /// AUTH
+  ///
+
   Future<Token> login(String username, String password) async {
+    final response = await dio.post(
+      '/auth/login',
+      data: {'username': username, 'password': password},
+    );
+
+    return Token.fromJson(response.data);
+  }
+
+  Future<Token> refreshToken(String refreshToken) async {
+    final response = await dio.post(
+      '/auth/refresh',
+      options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
+    );
+
+    return Token.fromJson(response.data);
+  }
+
+  Future<User> fetchMe() async {
+    final response = await dio.get('/auth/me');
+    return User.fromJson(response.data);
+  }
+
+  ///
+  /// ROLES
+  ///
+
+  Future<List<Role>> fetchAllRoles() async {
+    final response = await dio.get('/roles/');
+
+    final responseMap = response.data as Map<String, dynamic>;
+    final List<dynamic> items = responseMap['roles'] ?? [];
+
+    return items.map((e) => Role.fromJson(e)).toList();
+  }
+
+  ///
+  /// USERS
+  ///
+
+  Future<List<User>> fetchAllUsers() async {
+    final response = await dio.get('/users/');
+
+    final responseMap = response.data as Map<String, dynamic>;
+    final List<dynamic> items = responseMap['data'] ?? [];
+
+    return items.map((e) => User.fromJson(e)).toList();
+  }
+
+  Future<User> createUser(Map<String, dynamic> data) async {
+    final response = await dio.post('/users/', data: data);
+    return User.fromJson(response.data);
+  }
+
+  Future<User> updateUser(String userId, Map<String, dynamic> data) async {
+    final response = await dio.patch('/users/$userId', data: data);
+    return User.fromJson(response.data);
+  }
+
+  Future<void> deleteUser(String userId) async {
+    await dio.delete('/users/$userId');
+  }
+
+  /// Verifica si existe el usuario en backend
+  Future<bool> userExists(String userId) async {
     try {
-      final response = await dio.post(
-        '/auth/login',
-        data: {'username': username, 'password': password},
-      );
-      if (response.statusCode == 200) {
-        return Token.fromJson(response.data);
-      }
-      throw Exception('Login fallido con código: ${response.statusCode}');
+      final response = await dio.get('/users/$userId');
+      return response.statusCode == 200;
     } on DioException catch (e) {
-      if (e.response?.statusCode == 401) {
-        final errorMessage =
-            e.response?.data?['detail'] ?? 'Credenciales inválidas.';
-        throw Exception(errorMessage);
-      }
+      if (e.response?.statusCode == 404) return false;
       rethrow;
     }
   }
 
-  Future<Token> refreshToken(String refreshToken) async {
-    try {
-      final response = await dio.post(
-        '/auth/refresh',
-        // El API requiere el Refresh Token en el header como Bearer
-        options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
-      );
-      return Token.fromJson(response.data);
-    } on DioException catch (e) {
-      final errorMessage = e.response?.data?['detail'] ?? 'Fallo al refrescar.';
-      throw Exception(errorMessage);
-    }
-  }
+  ///
+  /// COMPANIES
+  ///
 
-  Future<User> fetchMe() async {
-    try {
-      final response = await dio.get('/auth/me');
-      return User.fromJson(response.data);
-    } on DioException catch (e) {
-      final errorMessage =
-          e.response?.data?['detail'] ?? 'Error al obtener usuario.';
-      throw Exception(errorMessage);
-    }
-  }
-
-  // --- Role Endpoints ---
-  Future<List<Role>> fetchAllRoles() async {
-    try {
-      final response = await dio.get('/roles/');
-
-      final responseMap = response.data as Map<String, dynamic>;
-      // Usa la clave 'roles' y maneja nulos.
-      final List<dynamic> jsonList =
-          (responseMap['roles'] as List<dynamic>?) ?? [];
-
-      return jsonList.map((json) => Role.fromJson(json)).toList();
-    } on DioException catch (e) {
-      throw Exception('Error al obtener roles: ${e.message}');
-    }
-  }
-
-  // --- User Endpoints ---
-  Future<List<User>> fetchAllUsers() async {
-    try {
-      final response = await dio.get('/users/');
-
-      final responseMap = response.data as Map<String, dynamic>;
-      // Se asume la clave 'data' y maneja nulos.
-      final List<dynamic> jsonList =
-          (responseMap['data'] as List<dynamic>?) ?? [];
-
-      return jsonList.map((json) => User.fromJson(json)).toList();
-    } on DioException catch (e) {
-      throw Exception('Error al obtener usuarios: ${e.message}');
-    }
-  }
-
-  Future<User> createUser(Map<String, dynamic> userData) async {
-    try {
-      // Usa la barra final: /users/
-      final response = await dio.post('/users/', data: userData);
-      return User.fromJson(response.data);
-    } on DioException catch (e) {
-      final errorMessage =
-          e.response?.data?['detail'] ?? 'Error desconocido al crear usuario.';
-      throw Exception(errorMessage);
-    }
-  }
-
-  Future<User> updateUser(String userId, Map<String, dynamic> userData) async {
-    try {
-      // Corrección para 404: Añadir la barra final.
-      final response = await dio.patch('/users/$userId/', data: userData);
-      return User.fromJson(response.data);
-    } on DioException catch (e) {
-      final errorMessage =
-          e.response?.data?['detail'] ??
-          'Error desconocido al actualizar usuario.';
-      throw Exception(errorMessage);
-    }
-  }
-
-  Future<void> deleteUser(String userId) async {
-    try {
-      // Se asume que DELETE usa /users/$userId sin barra final.
-      await dio.delete('/users/$userId');
-    } on DioException catch (e) {
-      final errorMessage =
-          e.response?.data?['detail'] ??
-          'Error desconocido al eliminar usuario.';
-      throw Exception(errorMessage);
-    }
-  }
-
-  // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA COMPANY
-  // ----------------------------------------------------------------------
   Future<List<Company>> fetchCompanies() async {
-    try {
-      final response = await dio.get('/platform/companies');
+    final response = await dio.get('/platform/companies');
 
-      // Se asume que la respuesta es DIRECTAMENTE una List<dynamic>.
-      final List<dynamic> jsonList = (response.data as List<dynamic>?) ?? [];
+    final List<dynamic> items = response.data is List ? response.data : [];
 
-      return jsonList.map((json) => Company.fromJson(json)).toList();
-    } on DioException catch (e) {
-      throw Exception('Error al obtener compañías: ${e.message}');
-    }
+    return items.map((e) => Company.fromJson(e)).toList();
   }
 
   Future<Company> createCompany(Map<String, dynamic> data) async {
-    try {
-      final response = await dio.post('/platform/companies', data: data);
-      return Company.fromJson(response.data);
-    } on DioException catch (e) {
-      // 💡 CORRECCIÓN EN EL MANEJO DE ERRORES:
-      if (e.response != null) {
-        // Intentamos obtener el detalle del error del cuerpo de la respuesta
-        final errorDetail = e.response?.data is Map
-            ? e.response?.data['detail'] as String?
-            : null;
-
-        // Si es 403, lanzamos una excepción con el mensaje del backend o uno predefinido.
-        if (e.response!.statusCode == 403) {
-          throw Exception(
-            errorDetail ??
-                'Fallo de Autorización (403): Permiso denegado por el servidor.',
-          );
-        }
-
-        // Para otros errores de respuesta (4xx, 5xx)
-        throw Exception(
-          errorDetail ?? 'Error HTTP ${e.response!.statusCode}: ${e.message}',
-        );
-      }
-      // Si el error no es de respuesta (ej: error de conexión)
-      throw Exception('Error de red al crear compañía: ${e.message}');
-    }
-  }
-
-  Future<Company> updateCompany(
-    String companyId,
-    Map<String, dynamic> data,
-  ) async {
-    final response = await dio.patch(
-      '/platform/companies/$companyId',
-      data: data,
-    );
+    final response = await dio.post('/platform/companies', data: data);
     return Company.fromJson(response.data);
   }
 
-  Future<void> deleteCompany(String companyId) async {
-    await dio.delete('/platform/companies/$companyId');
+  Future<Company> updateCompany(String id, Map<String, dynamic> data) async {
+    final response = await dio.patch('/platform/companies/$id', data: data);
+    return Company.fromJson(response.data);
   }
 
-  // ----------------------------------------------------------------------
-  // 💡 MÉTODOS PARA BRANCH (NUEVOS)
-  // ----------------------------------------------------------------------
+  Future<void> deleteCompany(String id) async {
+    await dio.delete('/platform/companies/$id');
+  }
+
+  ///
+  /// BRANCHES
+  ///
+
   Future<List<Branch>> fetchBranches(String companyId) async {
-    try {
-      final response = await dio.get('/platform/companies/$companyId/branches');
+    final response = await dio.get('/platform/companies/$companyId/branches');
 
-      final responseMap = response.data as Map<String, dynamic>;
-      // Se asume la clave 'data' y maneja nulos.
-      final List<dynamic> jsonList =
-          (responseMap['data'] as List<dynamic>?) ?? [];
+    final List<dynamic> items = response.data is List ? response.data : [];
 
-      return jsonList.map((json) => Branch.fromJson(json)).toList();
-    } on DioException catch (e) {
-      throw Exception('Error al obtener sucursales: ${e.message}');
-    }
+    return items.map((e) => Branch.fromJson(e)).toList();
   }
 
   Future<Branch> createBranch(
@@ -3714,6 +3584,7 @@ class ApiService {
       '/platform/companies/$companyId/branches',
       data: data,
     );
+
     return Branch.fromJson(response.data);
   }
 
@@ -3726,6 +3597,7 @@ class ApiService {
       '/platform/companies/$companyId/branches/$branchId',
       data: data,
     );
+
     return Branch.fromJson(response.data);
   }
 
@@ -3734,21 +3606,17 @@ class ApiService {
   }
 }
 
-// ---------------------------------------------
-// PROVEEDOR DE API SERVICE (CORRECTO)
-// ---------------------------------------------
+///
+/// ================================
+///      PROVIDERS
+/// ================================
+///
 
 final dioInstanceProvider = Provider((ref) => Dio());
 
-final apiServiceProvider = Provider((ref) {
+final apiServiceProvider = Provider<ApiService>((ref) {
   final dio = ref.watch(dioInstanceProvider);
-  final apiService = ApiService(dio, ref);
-
-  // CLAVE: Agregamos el Interceptor solo una vez
-  if (dio.interceptors.whereType<AuthInterceptor>().isEmpty) {
-    dio.interceptors.add(AuthInterceptor(ref, apiService));
-  }
-  return apiService;
+  return ApiService(dio, ref);
 });
 
 

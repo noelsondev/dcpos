@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 // 🚨 Asegúrate de que estas rutas coincidan con tu proyecto
-import '../models/user.dart'; // Contiene UserCreateLocal, UserUpdateLocal
+import '../models/user.dart'; // Contiene User, UserCreateLocal, UserUpdateLocal
 import '../models/role.dart';
 import '../models/company.dart';
 import '../models/branch.dart';
@@ -157,6 +157,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
 
         // Forzamos su Company ID para la operación
         finalCompanyId = currentUser.companyId;
+
+        // Si el rol NO requiere sucursal (ej: company_admin), forzamos null a la sucursal
+        if (!isBranchRequired) {
+          finalBranchId = null;
+        }
       } else {
         // Si el usuario logueado NO es Company Admin (Global Admin)
 
@@ -167,6 +172,11 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
             _isLoading = false;
           });
           return;
+        }
+
+        // Si el rol NO requiere sucursal (ej: company_admin), forzamos null a la sucursal
+        if (!isBranchRequired) {
+          finalBranchId = null;
         }
       }
 
@@ -189,10 +199,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
       finalCompanyId = null;
       finalBranchId = null;
     }
-    // B. Rol 'company_admin' requiere compañía, pero NO sucursal
-    else if (_selectedRoleName == 'company_admin') {
-      finalBranchId = null;
-    }
+    // B. Rol 'company_admin' requiere compañía, pero NO sucursal (Ya manejado en la sección de isCompanyRequired)
     // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
 
     try {
@@ -204,29 +211,39 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
           username: _usernameController.text,
           password: _passwordController.text,
           roleId: _selectedRoleId!,
-          roleName: _selectedRoleName!,
           localId: newUserId,
-          companyId: finalCompanyId,
-          branchId: finalBranchId,
+          companyId: finalCompanyId, // Usa el ID final (puede ser null)
+          branchId: finalBranchId, // Usa el ID final (puede ser null)
           isActive: true,
         );
 
-        await usersNotifier.createUser(newUser);
+        // IMPORTANTE: el provider espera (UserCreateLocal, String targetRoleName)
+        await usersNotifier.createUser(newUser, _selectedRoleName!);
       } else {
         // --- EDICIÓN (Offline-First) ---
+
+        // 🚨 ESTE ES EL PUNTO CLAVE DEL ERROR DE SINCRONIZACIÓN.
+        // Si 'widget.userToEdit!.id' contiene el ID temporal ('a49c9076...'),
+        // el problema es que el objeto User en Riverpod no se actualizó con el
+        // ID Canónico del backend ('3e2961c8...') después de la creación exitosa.
+        // La solución real está en 'UsersNotifier' o 'SyncService'.
+
         final updatedUser = UserUpdateLocal(
-          id: widget.userToEdit!.id,
+          id: widget
+              .userToEdit!
+              .id, // Usa el ID que el objeto tiene (debe ser el canónico)
           username: _usernameController.text,
           password: _passwordController.text.isNotEmpty
               ? _passwordController.text
               : null,
           roleId: _selectedRoleId,
-          roleName: _selectedRoleName,
-          companyId: finalCompanyId,
-          branchId: finalBranchId,
+          companyId: finalCompanyId, // Usa el ID final (puede ser null)
+          branchId: finalBranchId, // Usa el ID final (puede ser null)
+          isActive: null,
         );
 
-        await usersNotifier.editUser(updatedUser);
+        // provider: editUser(UserUpdateLocal data, String? targetRoleName)
+        await usersNotifier.editUser(updatedUser, _selectedRoleName);
       }
 
       if (mounted) Navigator.of(context).pop();
@@ -441,10 +458,16 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
                           } else if (isCurrentUserCompanyAdmin) {
                             // Si es Company Admin y el rol lo requiere, precarga su ID
                             _selectedCompanyId = currentUser!.companyId;
+                            // Si el nuevo rol es company_admin, limpia la sucursal.
+                            if (_selectedRoleName == 'company_admin') {
+                              _selectedBranchId = null;
+                            }
                           } else if (widget.userToEdit == null) {
                             // Si es Global Admin creando uno nuevo, limpia la selección de compañía
                             _selectedCompanyId = null;
+                            _selectedBranchId = null;
                           }
+                          // Si es Global Admin editando y el nuevo rol requiere compañía, se mantienen los valores para que el dropdown los muestre.
 
                           _companyIdValidationError = null;
                           _branchIdValidationError = null;

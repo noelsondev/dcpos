@@ -18,7 +18,7 @@ int fastHash(String string) {
 }
 
 // ----------------------------------------------------------------------
-// 📝 MODELO DE BASE DE DATOS Y API
+// 📝 MODELO DE BASE DE DATOS Y API (roleName se mantiene aquí para la UI)
 // ----------------------------------------------------------------------
 
 @JsonSerializable()
@@ -41,7 +41,7 @@ class User {
   final String roleId;
 
   @JsonKey(name: 'role_name', required: true)
-  final String roleName;
+  final String roleName; // <--- Se mantiene aquí para la lectura desde la API
 
   final bool isActive;
 
@@ -82,10 +82,9 @@ class User {
 }
 
 // ----------------------------------------------------------------------
-// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (OFFLINE FIRST)
+// 🚨 MODELO PARA LA COLA DE SINCRONIZACIÓN (OFFLINE FIRST - CREACIÓN)
 // ----------------------------------------------------------------------
 
-// Este es el modelo que el Admin crea en la app.
 @JsonSerializable()
 class UserCreateLocal {
   @JsonKey(required: true)
@@ -97,8 +96,7 @@ class UserCreateLocal {
   @JsonKey(name: 'role_id', required: true)
   final String roleId;
 
-  @JsonKey(name: 'role_name', required: true)
-  final String roleName;
+  // 🔥 ELIMINADO: roleName, ya que el backend no lo necesita/acepta en la creación.
 
   final bool isActive;
 
@@ -113,7 +111,7 @@ class UserCreateLocal {
     required this.username,
     required this.password,
     required this.roleId,
-    required this.roleName,
+    // 🔥 ELIMINADO: required this.roleName,
     this.isActive = true,
     this.companyId,
     this.branchId,
@@ -126,24 +124,22 @@ class UserCreateLocal {
   Map<String, dynamic> toJson() => _$UserCreateLocalToJson(this);
 }
 
-// 🚨 MODELO PARA LA ACTUALIZACIÓN (Necesitas esto para la edición)
+// ----------------------------------------------------------------------
+// 🚨 MODELO PARA LA ACTUALIZACIÓN (OFFLINE FIRST - EDICIÓN)
+// ----------------------------------------------------------------------
+
 @JsonSerializable(includeIfNull: false) // No incluye campos nulos en el JSON
 class UserUpdateLocal {
   // ✅ CORREGIDO: Usamos 'id' para ser consistentes.
   final String id;
 
-  // ✅ CORREGIDO: Añadido roleId que es esencial para la edición.
   @JsonKey(name: 'role_id')
   final String? roleId;
 
   final String? username;
   final String? password;
 
-  //CLAVE: Añadido 'roleName'.
-  // 'includeToJson: false' evita que se serialice al enviarlo a la API,
-  // pero permite acceder a él en el Notifier para la lógica.
-  @JsonKey(includeToJson: false)
-  final String? roleName;
+  // 🔥 ELIMINADO: roleName, ya que el backend lo rechaza al actualizar.
 
   final bool? isActive;
   final String? companyId;
@@ -153,7 +149,7 @@ class UserUpdateLocal {
     required this.id, // ID del servidor
     this.username,
     this.password,
-    this.roleName,
+    // 🔥 ELIMINADO: this.roleName,
     this.roleId,
     this.isActive,
     this.companyId,

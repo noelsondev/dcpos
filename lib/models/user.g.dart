@@ -2499,13 +2499,12 @@ Map<String, dynamic> _$UserToJson(User instance) => <String, dynamic>{
 UserCreateLocal _$UserCreateLocalFromJson(Map<String, dynamic> json) {
   $checkKeys(
     json,
-    requiredKeys: const ['username', 'password', 'role_id', 'role_name'],
+    requiredKeys: const ['username', 'password', 'role_id'],
   );
   return UserCreateLocal(
     username: json['username'] as String,
     password: json['password'] as String,
     roleId: json['role_id'] as String,
-    roleName: json['role_name'] as String,
     isActive: json['isActive'] as bool? ?? true,
     companyId: json['companyId'] as String?,
     branchId: json['branchId'] as String?,
@@ -2517,7 +2516,6 @@ Map<String, dynamic> _$UserCreateLocalToJson(UserCreateLocal instance) =>
       'username': instance.username,
       'password': instance.password,
       'role_id': instance.roleId,
-      'role_name': instance.roleName,
       'isActive': instance.isActive,
       'companyId': instance.companyId,
       'branchId': instance.branchId,
@@ -2528,7 +2526,6 @@ UserUpdateLocal _$UserUpdateLocalFromJson(Map<String, dynamic> json) =>
       id: json['id'] as String,
       username: json['username'] as String?,
       password: json['password'] as String?,
-      roleName: json['roleName'] as String?,
       roleId: json['role_id'] as String?,
       isActive: json['isActive'] as bool?,
       companyId: json['companyId'] as String?,
