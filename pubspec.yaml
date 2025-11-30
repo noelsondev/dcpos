@@ -43,7 +43,7 @@ dependencies:
   json_annotation: ^4.8.1
   
   # Base de Datos Local (Isar)
-  isar: ^3.1.0+1
+  isar:  ^3.1.0+1
   isar_flutter_libs: ^3.1.0+1
   # NECESARIO PARA ENCONTRAR LA RUTA DE ISAR (path_provider)
   path_provider: ^2.1.3 # Añade esta línea

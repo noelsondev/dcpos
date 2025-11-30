@@ -913,7 +913,7 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
         // ✅ CORRECCIÓN: Uso de argumentos nombrados
         final syncItem = SyncQueueItem.create(
           operation: SyncOperation.CREATE_BRANCH,
-          endpoint: '/api/v1/platform/companies/${data.companyId}/branches',
+          endpoint: '/platform/companies/${data.companyId}/branches',
           payload: jsonEncode(data.toJson()),
           localId: localId,
         );
@@ -966,8 +966,7 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
         // Uso de argumentos nombrados
         final syncItem = SyncQueueItem.create(
           operation: SyncOperation.UPDATE_BRANCH,
-          endpoint:
-              '/api/v1/platform/companies/${data.companyId}/branches/${data.id}',
+          endpoint: '/platform/companies/${data.companyId}/branches/${data.id}',
           payload: jsonEncode(data.toJson()),
         );
         await _isarService.enqueueSyncItem(syncItem);
@@ -1017,7 +1016,7 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     // Encolar la operación de eliminación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.DELETE_BRANCH,
-      endpoint: '/api/v1/platform/companies/$companyId/branches/$branchId',
+      endpoint: '/platform/companies/$companyId/branches/$branchId',
       payload: '{}',
     );
     await _isarService.enqueueSyncItem(syncItem);
@@ -2928,8 +2927,17 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
         await usersNotifier.createUser(newUser, _selectedRoleName!);
       } else {
         // --- EDICIÓN (Offline-First) ---
+
+        // 🚨 ESTE ES EL PUNTO CLAVE DEL ERROR DE SINCRONIZACIÓN.
+        // Si 'widget.userToEdit!.id' contiene el ID temporal ('a49c9076...'),
+        // el problema es que el objeto User en Riverpod no se actualizó con el
+        // ID Canónico del backend ('3e2961c8...') después de la creación exitosa.
+        // La solución real está en 'UsersNotifier' o 'SyncService'.
+
         final updatedUser = UserUpdateLocal(
-          id: widget.userToEdit!.id,
+          id: widget
+              .userToEdit!
+              .id, // Usa el ID que el objeto tiene (debe ser el canónico)
           username: _usernameController.text,
           password: _passwordController.text.isNotEmpty
               ? _passwordController.text
@@ -3983,42 +3991,32 @@ import 'api_service.dart';
 import 'isar_service.dart';
 import 'connectivity_service.dart';
 
-// Asumimos que estos proveedores están definidos en otro lugar
-// final isarServiceProvider = Provider((ref) => IsarService());
-// final apiServiceProvider = Provider((ref) => ApiService(ref));
-
 final syncServiceProvider = Provider((ref) => SyncService(ref));
 
 class SyncService {
   final Ref _ref;
   bool _isSyncing = false;
-  // Almacena el estado anterior para detectar el "cambio a online"
   bool _wasConnected = false;
 
   SyncService(this._ref) {
-    // 🚀 CONFIGURAR LISTENER DE CONECTIVIDAD EN EL CONSTRUCTOR
     _ref.listen<bool>(isConnectedProvider, (_, isConnected) {
       if (isConnected && !_wasConnected) {
-        // Detecta el cambio de Offline a Online
         print('🌐 CONECTIVIDAD RESTAURADA: Llamando a startSync()');
         startSync();
       }
       _wasConnected = isConnected;
-    }, fireImmediately: true); // Verifica el estado inmediatamente al inicio
+    }, fireImmediately: true);
   }
 
-  // Función principal para intentar sincronizar la cola
   Future<void> startSync() async {
     if (_isSyncing) return;
-
-    // Leer el valor del StateProvider directamente
     if (!_ref.read(isConnectedProvider)) {
       print('🔄 SINCRONIZACIÓN CANCELADA: No hay conexión a Internet.');
       return;
     }
 
-    // Aseguramos que el AuthProvider tenga un token
-    if (_ref.read(authProvider.notifier).accessToken == null) {
+    final authNotifier = _ref.read(authProvider.notifier);
+    if (authNotifier.accessToken == null) {
       print('DEBUG SYNC: No hay token de acceso. Deteniendo sincronización.');
       return;
     }
@@ -4032,105 +4030,173 @@ class SyncService {
     try {
       while (true) {
         final item = await isarService.getNextSyncItem();
+        if (item == null) break;
 
-        if (item == null) {
-          break; // La cola está vacía.
-        }
-
-        // 🚀 FIX: Capturamos el valor no-nulo en una variable no-nullable.
         final currentItem = item;
+        final payloadMap = (currentItem.payload.isNotEmpty)
+            ? jsonDecode(currentItem.payload)
+            : <String, dynamic>{};
 
-        final payloadMap = jsonDecode(currentItem.payload);
         print(
           '-> Procesando [${currentItem.operation.name}] a ${currentItem.endpoint}',
         );
 
         try {
-          dynamic response;
-
+          // Manejo por tipo de operación
           switch (currentItem.operation) {
+            // Usuarios
             case SyncOperation.CREATE_USER:
-              response = await apiService.dio.post(
-                currentItem.endpoint, // '/users/'
-                data: payloadMap,
-              );
-
-              // 🚨 CORRECCIÓN CRÍTICA: Reemplazar el usuario temporal con el real
-              final createdUser = User.fromJson(response.data);
-
-              if (currentItem.localId != null) {
-                // 1. Eliminar el usuario temporal (usando el ID local)
-                await isarService.deleteUser(currentItem.localId!);
-
-                // 2. Guardar el usuario final con el ID real del servidor
-                await isarService.saveUsers([createdUser]);
-
-                // 3. Forzar el refresco de la UI
-                _ref.invalidate(usersProvider);
-
-                print(
-                  '✅ SYNC: Usuario local ${currentItem.localId} actualizado a ServerID ${createdUser.id}',
+              {
+                final response = await apiService.dio.post(
+                  currentItem.endpoint, // '/api/v1/users/' (colección)
+                  data: payloadMap,
                 );
+
+                final createdUser = User.fromJson(
+                  response.data as Map<String, dynamic>,
+                );
+
+                if (currentItem.localId != null) {
+                  // Reemplazar temporal por real
+                  await isarService.deleteUser(currentItem.localId!);
+                  await isarService.saveUsers([createdUser]);
+                  _ref.invalidate(usersProvider);
+                  print(
+                    '✅ SYNC: Usuario local ${currentItem.localId} -> ServerID ${createdUser.id}',
+                  );
+                }
+                break;
               }
-              break;
 
             case SyncOperation.UPDATE_USER:
-              // 🚨 CORRECCIÓN: Usar item.endpoint directamente (ya debe contener el ID)
-              response = await apiService.dio.patch(
-                currentItem
-                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
-                data: payloadMap,
-              );
-              _ref.invalidate(usersProvider);
-              break;
+              {
+                // Extraer el targetId si endpoint termina en /{id} o /{id}/
+                final parts = currentItem.endpoint.split('/');
+                final lastPart = parts.isNotEmpty ? parts.last : '';
+                final targetId = lastPart.isEmpty && parts.length > 1
+                    ? parts[parts.length - 2]
+                    : lastPart;
+
+                // Verificar existencia del recurso en backend antes de intentar PATCH
+                bool exists = true;
+                try {
+                  exists = await apiService.userExists(targetId);
+                } on DioException catch (e) {
+                  // Si API lanza error distinto a 404, mejor detener para investigar
+                  print(
+                    '❌ ERROR al verificar existencia del recurso $targetId: ${e.message}',
+                  );
+                  throw e;
+                }
+
+                if (!exists) {
+                  print(
+                    '⚠️ SYNC: Recurso $targetId no existe en backend. Desencolando UPDATE.',
+                  );
+                  await isarService.dequeueSyncItem(currentItem.id);
+                  continue; // seguir con el siguiente item
+                }
+
+                // PATCH a /users/{id} (sin slash final)
+                await apiService.dio.patch(
+                  currentItem.endpoint,
+                  data: payloadMap,
+                );
+                _ref.invalidate(usersProvider);
+                break;
+              }
 
             case SyncOperation.DELETE_USER:
-              response = await apiService.dio.delete(
-                currentItem
-                    .endpoint, // Ejemplo: '/users/uuid-real-del-servidor'
-              );
-              // La eliminación física ya se maneja en el Notifier si la red está ON.
-              // Aquí solo debemos desencolar. La invalidación es opcional ya que DELETE
-              // solo borra un registro.
-              // _ref.invalidate(usersProvider);
-              break;
+              {
+                // Extraer id similar al UPDATE
+                final parts = currentItem.endpoint.split('/');
+                final lastPart = parts.isNotEmpty ? parts.last : '';
+                final targetId = lastPart.isEmpty && parts.length > 1
+                    ? parts[parts.length - 2]
+                    : lastPart;
 
-            case SyncOperation.CREATE_COMPANY:
-            case SyncOperation.UPDATE_COMPANY:
-            case SyncOperation.DELETE_COMPANY:
+                // Intentar delete; si 404 -> considerarlo ya borrado y desencolar
+                try {
+                  await apiService.dio.delete(currentItem.endpoint);
+                } on DioException catch (e) {
+                  if (e.response?.statusCode == 404) {
+                    print(
+                      '⚠️ SYNC: DELETE recibió 404 para $targetId — asumiendo ya borrado. Desencolando.',
+                    );
+                  } else {
+                    rethrow; // otros errores se propagan al catch externo
+                  }
+                }
+                break;
+              }
+
+            // usuarios FIN
+
+            // Branches
+
             case SyncOperation.CREATE_BRANCH:
-            case SyncOperation.UPDATE_BRANCH:
-            case SyncOperation.DELETE_BRANCH:
-              // Estas operaciones se manejan en sus respectivos Notifiers (BranchesNotifier, CompaniesNotifier)
-              // Aquí solo las desencolamos si son exitosas (aunque deberían ser manejadas por el notifier al recargar)
-              // Para mantener la lógica separada, solo agregamos el caso aquí para evitar el 'default'.
-              print(
-                'Operación de Compañía/Sucursal gestionada en su propio Notifier. Saltando.',
-              );
-              break;
+              {
+                final response = await apiService.dio.post(
+                  currentItem.endpoint,
+                  data: payloadMap,
+                );
 
+                // Asumimos que la respuesta es un Branch completo
+                final createdBranch = response.data;
+
+                if (currentItem.localId != null) {
+                  // Reemplazar temporal por real
+                  await isarService.deleteBranch(currentItem.localId!);
+                  await isarService.saveBranches([createdBranch]);
+                  _ref.invalidate(usersProvider);
+                  print(
+                    '✅ SYNC: Branch local ${currentItem.localId} -> ServerID ${createdBranch.id}',
+                  );
+                }
+                break;
+              }
+
+            // brenches FIN
+
+            // Otros casos que delegues...
             default:
-              print('Operación no implementada: ${currentItem.operation}');
+              print(
+                'Operación no implementada en SyncService: ${currentItem.operation}',
+              );
               break;
           }
 
-          // Si la llamada es exitosa, desencolar
+          // Si todo fue OK, desencolar
           await isarService.dequeueSyncItem(currentItem.id);
         } catch (e) {
-          // 🚨 Manejo de Falla: Detiene la cola y muestra el error del servidor.
+          // Manejo más granular de errores
           print('❌ FALLA Sincronización: ${e.toString()}');
 
-          if (e is DioException &&
-              e.response?.data != null &&
-              e.response?.data is Map) {
-            final serverDetail =
-                e.response?.data?['detail'] ??
-                'Error desconocido en el servidor.';
-            print('❌ DETALLE DEL SERVIDOR: $serverDetail');
+          if (e is DioException) {
+            final status = e.response?.statusCode;
+            if (status == 404) {
+              // Si recibimos un 404 inesperado aquí (por ejemplo en PATCH),
+              // desencolamos ese item porque el recurso no existe.
+              print(
+                '❌ SYNC: 404 en operación ${currentItem.operation}. Desencolando y continuando.',
+              );
+              await isarService.dequeueSyncItem(currentItem.id);
+              continue;
+            }
+
+            // Si fue un 401/refresh fallido dejemos que el interceptor lo maneje (se volverá a intentar luego)
+            if (status == 401) {
+              print(
+                '🔐 SYNC: 401 recibido, intercepción para refresh. Deteniendo sync para reintentar más tarde.',
+              );
+            }
           }
-          break; // Romper el bucle y esperar una nueva llamada a startSync
+
+          // Detenemos el procesamiento para no perder orden y para permitir reintento posterior
+          break;
         }
       }
+
       print('✅ SINCRONIZACIÓN COMPLETADA/DETENIDA.');
     } catch (e) {
       print('❌ Error general en SyncService: $e');

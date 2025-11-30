@@ -2,7 +2,6 @@
 
 import 'dart:convert';
 import 'package:dcpos/providers/companies_provider.dart';
-// ❌ ELIMINADA la importación ambigua/duplicada
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import '../models/branch.dart';
@@ -10,7 +9,9 @@ import '../models/sync_queue_item.dart';
 import '../services/api_service.dart';
 import '../services/isar_service.dart';
 import '../services/connectivity_service.dart';
-import '../services/sync_service.dart'; // ✅ Única importación del servicio
+import '../services/sync_service.dart';
+
+// Asegúrate de que BranchCreateLocal y BranchUpdateLocal están definidos/importados.
 
 // Este proveedor gestionará la lista de TODAS las sucursales, aunque la UI las filtre por compañía.
 
@@ -109,7 +110,6 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
       await _isarService.updateLocalBranchWithRealId(localId, newBranch);
 
       // 4. Actualizar estado
-      // ✅ CORRECCIÓN: Tipado explícito <Branch>
       final updatedList = newList.map<Branch>((b) {
         return b.id == localId ? newBranch : b;
       }).toList();
@@ -118,10 +118,10 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     } on DioException catch (e) {
       // 5. Fallback Offline: Encolar la operación
       if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
-        // ✅ CORRECCIÓN: Uso de argumentos nombrados
         final syncItem = SyncQueueItem.create(
           operation: SyncOperation.CREATE_BRANCH,
-          endpoint: '/api/v1/platform/companies/${data.companyId}/branches',
+          // ✅ CORRECCIÓN: Eliminar /api/v1/ para evitar duplicación
+          endpoint: '/platform/companies/${data.companyId}/branches',
           payload: jsonEncode(data.toJson()),
           localId: localId,
         );
@@ -171,11 +171,10 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     } on DioException catch (e) {
       // 5. Fallback Offline: Encolar la operación
       if (e.response?.statusCode == null || e.response!.statusCode! < 500) {
-        // Uso de argumentos nombrados
         final syncItem = SyncQueueItem.create(
           operation: SyncOperation.UPDATE_BRANCH,
-          endpoint:
-              '/api/v1/platform/companies/${data.companyId}/branches/${data.id}',
+          // ✅ CORRECCIÓN: Eliminar /api/v1/ para evitar duplicación
+          endpoint: '/platform/companies/${data.companyId}/branches/${data.id}',
           payload: jsonEncode(data.toJson()),
         );
         await _isarService.enqueueSyncItem(syncItem);
@@ -225,7 +224,8 @@ class BranchesNotifier extends AsyncNotifier<List<Branch>> {
     // Encolar la operación de eliminación
     final syncItem = SyncQueueItem.create(
       operation: SyncOperation.DELETE_BRANCH,
-      endpoint: '/api/v1/platform/companies/$companyId/branches/$branchId',
+      // ✅ CORRECCIÓN: Eliminar /api/v1/ para evitar duplicación
+      endpoint: '/platform/companies/$companyId/branches/$branchId',
       payload: '{}',
     );
     await _isarService.enqueueSyncItem(syncItem);
