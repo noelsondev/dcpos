@@ -140,12 +140,21 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
     String? finalBranchId = _selectedBranchId;
 
     // ------------------------------------------------------
-    // 🚨 VALIDACIÓN LOCAL PARA COMPANY_ADMIN (y otros roles requeridos)
+    // 🚀 INICIO DE LÓGICA CORREGIDA PARA ASIGNACIÓN DE IDs
     // ------------------------------------------------------
+
+    // 1. LIMPIEZA INCONDICIONAL: Si el rol NO requiere compañía (ej. global_admin),
+    // los IDs deben ser NULL para evitar enviar IDs obsoletos.
+    if (!isCompanyRequired) {
+      finalCompanyId = null;
+      finalBranchId = null;
+    }
+
+    // 2. VALIDACIÓN Y ASIGNACIÓN si la compañía ES requerida.
     if (isCompanyRequired) {
       // Si el usuario logueado es Company Admin
       if (isCurrentUserCompanyAdmin) {
-        // 1. Validación de Compañía (Si intenta asignar una que NO es la suya)
+        // Validación de Seguridad: Evitar que el Company Admin intente asignar a OTRA compañía.
         if (finalCompanyId != null && finalCompanyId != currentUser.companyId) {
           setState(() {
             _companyIdValidationError =
@@ -180,7 +189,7 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
         }
       }
 
-      // 2. VALIDACIÓN MANUAL PARA SUCURSAL SI ES CAJERO O CONTADOR
+      // 3. VALIDACIÓN MANUAL PARA SUCURSAL si es requerida (cashier o accountant)
       if (isBranchRequired) {
         if (finalBranchId == null || finalBranchId.isEmpty) {
           setState(() {
@@ -193,14 +202,8 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
       }
     }
     // ------------------------------------------------------
-
-    // A. Roles que NO requieren compañía/sucursal (limpiar IDs)
-    if (!isCompanyRequired) {
-      finalCompanyId = null;
-      finalBranchId = null;
-    }
-    // B. Rol 'company_admin' requiere compañía, pero NO sucursal (Ya manejado en la sección de isCompanyRequired)
-    // C. Rol 'cashier' o 'accountant' requieren ambos (finalCompanyId y finalBranchId se mantienen y fueron validados)
+    // 🔚 FIN DE LÓGICA CORREGIDA
+    // ------------------------------------------------------
 
     try {
       if (widget.userToEdit == null) {
@@ -221,12 +224,6 @@ class _UserFormScreenState extends ConsumerState<UserFormScreen> {
         await usersNotifier.createUser(newUser, _selectedRoleName!);
       } else {
         // --- EDICIÓN (Offline-First) ---
-
-        // 🚨 ESTE ES EL PUNTO CLAVE DEL ERROR DE SINCRONIZACIÓN.
-        // Si 'widget.userToEdit!.id' contiene el ID temporal ('a49c9076...'),
-        // el problema es que el objeto User en Riverpod no se actualizó con el
-        // ID Canónico del backend ('3e2961c8...') después de la creación exitosa.
-        // La solución real está en 'UsersNotifier' o 'SyncService'.
 
         final updatedUser = UserUpdateLocal(
           id: widget

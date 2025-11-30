@@ -96,14 +96,17 @@ class UserCreateLocal {
   @JsonKey(name: 'role_id', required: true)
   final String roleId;
 
-  // 🔥 ELIMINADO: roleName, ya que el backend no lo necesita/acepta en la creación.
-
   final bool isActive;
 
+  // ✅ CORRECCIÓN: Agregar @JsonKey para mapear a snake_case
+  @JsonKey(name: 'company_id')
   final String? companyId;
+
+  // ✅ CORRECCIÓN: Agregar @JsonKey para mapear a snake_case
+  @JsonKey(name: 'branch_id')
   final String? branchId;
 
-  // 💡 CAMBIO CRÍTICO 1: Hacer 'localId' nullable.
+  // localId solo se usa localmente, no se incluye en el JSON
   @JsonKey(includeFromJson: false, includeToJson: false)
   final String? localId;
 
@@ -111,11 +114,9 @@ class UserCreateLocal {
     required this.username,
     required this.password,
     required this.roleId,
-    // 🔥 ELIMINADO: required this.roleName,
     this.isActive = true,
     this.companyId,
     this.branchId,
-    // 💡 CAMBIO CRÍTICO 2: Quitar 'required' del constructor.
     this.localId,
   });
 
@@ -130,7 +131,6 @@ class UserCreateLocal {
 
 @JsonSerializable(includeIfNull: false) // No incluye campos nulos en el JSON
 class UserUpdateLocal {
-  // ✅ CORREGIDO: Usamos 'id' para ser consistentes.
   final String id;
 
   @JsonKey(name: 'role_id')
@@ -139,17 +139,20 @@ class UserUpdateLocal {
   final String? username;
   final String? password;
 
-  // 🔥 ELIMINADO: roleName, ya que el backend lo rechaza al actualizar.
-
   final bool? isActive;
+
+  // ✅ CORRECCIÓN: Agregar @JsonKey para mapear a snake_case
+  @JsonKey(name: 'company_id')
   final String? companyId;
+
+  // ✅ CORRECCIÓN: Agregar @JsonKey para mapear a snake_case
+  @JsonKey(name: 'branch_id')
   final String? branchId;
 
   UserUpdateLocal({
     required this.id, // ID del servidor
     this.username,
     this.password,
-    // 🔥 ELIMINADO: this.roleName,
     this.roleId,
     this.isActive,
     this.companyId,

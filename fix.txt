@@ -1,0 +1,12 @@
+##fix
+
+1- agregar los snackbar en login cuando hay error de login o exito(pendiente)
+2- arregla el create company syncqueue :
+    - quitar el campo de localId por el el backend acepta : 
+    {
+     "name": "string",
+     "slug": "string"
+    }
+    (pendiente)
+
+3- add comapny_id and brranche_id on CRUD user request

@@ -89,7 +89,6 @@ class IsarService {
   // Devolvemos el único usuario de la sesión activa (con tokens)
   Future<User?> getActiveUser() async {
     final isar = await db;
-    // Buscamos el primer (o único) usuario guardado como sesión activa
     return isar.users.where().findFirst();
   }
 
@@ -99,12 +98,11 @@ class IsarService {
     return await isar.users.where().findAll();
   }
 
-  // 🚨 CORRECCIÓN CLAVE PARA LA ELIMINACIÓN 🚨
+  // Elimina un usuario por su ID (String)
   Future<void> deleteUser(String userId) async {
     final isar = await db;
     await isar.writeTxn(() async {
-      // En lugar de usar fastHash(userId) y .delete(isarId),
-      // usamos una consulta filter() sobre el campo 'id' de tipo String.
+      // Eliminamos el usuario buscando por el campo 'id' (String)
       final count = await isar.users
           .filter()
           .idEqualTo(userId) // Filtramos por el ID externo (String)
@@ -134,8 +132,8 @@ class IsarService {
   Future<void> saveRoles(List<Role> roles) async {
     final isar = await db;
     if (isar == null) return;
-    await isar!.writeTxn(() async {
-      await isar!.roles.putAll(roles); // putAll usa el id único para put/update
+    await isar.writeTxn(() async {
+      await isar.roles.putAll(roles); // putAll usa el id único para put/update
     });
   }
 
@@ -143,36 +141,53 @@ class IsarService {
   Future<List<Role>> getAllRoles() async {
     final isar = await db;
     if (isar == null) return [];
-    return isar!.roles.where().findAll();
+    return isar.roles.where().findAll();
   }
 
-  // 🚨 NUEVO MÉTODO CRÍTICO para la sincronización de CREACIÓN
+  // 🚨 CORRECCIÓN CLAVE: Fusiona la información del usuario temporal
+  // con la respuesta del API.
   Future<void> updateLocalUserWithRealId(String localId, User newUser) async {
     final isar = await db;
     await isar.writeTxn(() async {
-      // 1. Encontrar el usuario temporal por su ID temporal (que está en el campo 'id')
-      final localUserIsarId = await isar.users
+      // 1. Encontrar el usuario temporal por su ID temporal (localId)
+      final localUser = await isar.users
           .filter()
           .idEqualTo(localId)
-          .isarIdProperty()
           .findFirst();
 
-      if (localUserIsarId != null) {
-        // 2. Eliminar el registro temporal (que tiene el localId)
-        await isar.users.delete(localUserIsarId);
-      }
+      if (localUser != null) {
+        // 2. Crear un objeto User FINAL fusionando datos:
+        //    - Mantenemos companyId y branchId del localUser (por si el API no los devuelve).
+        //    - Tomamos el ID real, roleName y el resto de datos del API (newUser).
+        final finalUser = newUser.copyWith(
+          companyId: localUser.companyId,
+          branchId: localUser.branchId,
+          accessToken: localUser.accessToken,
+          refreshToken: localUser.refreshToken,
+        );
 
-      // 3. Guardar el nuevo registro (con el ID real/UUID devuelto por el API)
-      // El método put manejará la inserción del nuevo User.
-      await isar.users.put(newUser);
+        // 3. Eliminar el registro temporal usando el IsarId
+        await isar.users.delete(localUser.isarId);
+
+        // 4. Guardar el objeto FINAL fusionado
+        await isar.users.put(finalUser);
+
+        print(
+          'DEBUG ISAR SYNC: Fusión completa. Local ID: $localId, Real ID: ${finalUser.id}. '
+          'Company ID: ${finalUser.companyId}',
+        );
+      } else {
+        // Si el usuario temporal no existe, guardamos el nuevo usuario del API.
+        await isar.users.put(newUser);
+        print(
+          'DEBUG ISAR SYNC: Usuario temporal no encontrado, guardado directo del API.',
+        );
+      }
     });
-    print(
-      'DEBUG ISAR SYNC: Usuario con ID temporal $localId actualizado a ID real ${newUser.id}.',
-    );
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA COMPANY
+  // 💡 MÉTODOS PARA COMPANY
   // ----------------------------------------------------------------------
   Future<List<Company>> getAllCompanies() async {
     final isar = await db;
@@ -215,7 +230,7 @@ class IsarService {
   }
 
   // ----------------------------------------------------------------------
-  // 💡 NUEVOS MÉTODOS PARA BRANCH
+  // 💡 MÉTODOS PARA BRANCH
   // ----------------------------------------------------------------------
   Future<List<Branch>> getAllBranches() async {
     final isar = await db;
@@ -267,6 +282,10 @@ class IsarService {
       await isar.branchs.put(newBranch);
     });
   }
+
+  // ----------------------------------------------------------------------
+  // MÉTODOS PARA COLA DE SINCRONIZACIÓN
+  // ----------------------------------------------------------------------
 
   Future<void> enqueueSyncItem(SyncQueueItem item) async {
     final isar = await db;
